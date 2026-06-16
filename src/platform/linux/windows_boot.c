@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "windows_boot.h"
 #include "filesystem.h"
+#include "pki.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -206,6 +207,18 @@ static int setup_uefi_boot(const char *mount_point,
         fprintf(stderr, "ERROR: Failed to copy BOOTX64.EFI (disk full, permission denied, or I/O error)\n");
         return ISO_ERR_EXTRACT_FAILED;
     }
+
+    /* Verify BOOTX64.EFI is signed — unsigned bootloaders will be rejected by Secure Boot */
+    int signed_result = pki_is_signed(boot_info->bootx64_path);
+    if (signed_result == 0) {
+        const char *sb_warn = "WARNING: Windows BOOTX64.EFI is not Authenticode-signed. "
+                              "This USB may fail to boot on systems with Secure Boot enabled.";
+        fprintf(stderr, "%s\n", sb_warn);
+        if (progress_cb) {
+            progress_cb(8, sb_warn, NULL);
+        }
+    }
+
     if (progress_cb) {
         progress_cb(10, "Copied BOOTX64.EFI", NULL);
     }

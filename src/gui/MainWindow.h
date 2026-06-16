@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 #include "winafi.h"
+#include "platform/linux/iso_extract.h"
 #include <QMainWindow>
 #include <memory>
 class QStackedWidget; class QLabel; class QProgressBar; class QPushButton;

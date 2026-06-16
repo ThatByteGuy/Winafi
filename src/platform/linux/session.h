@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "device.h"
 #include "iso.h"
+#include "iso_extract.h"
 
 /**
  * Session state machine for Winafi Linux
@@ -224,5 +225,12 @@ void winafi_set_progress_callback(winafi_session_t *session,
  * Returns WINAFI_OK on success, -1 on NULL session.
  */
 int winafi_session_set_unattend(winafi_session_t *session, int flags, const char *username);
+
+/*
+ * Get the Linux Secure Boot status for the currently loaded ISO.
+ * Returns LINUX_SB_UNKNOWN if no ISO is loaded or it is not a Linux ISO.
+ * Can be called after winafi_session_load_iso() succeeds.
+ */
+linux_sb_status_t winafi_get_linux_sb_status(winafi_session_t *session);
 
 #endif

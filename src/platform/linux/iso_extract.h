@@ -79,6 +79,33 @@ typedef enum {
 int iso_detect_os(const char *iso_path, iso_info_t *out_info);
 
 /**
+ * Linux Secure Boot status as detected from ISO contents
+ */
+typedef enum {
+    LINUX_SB_UNKNOWN    = 0,  // Not a Linux ISO or EFI presence unclear
+    LINUX_SB_SHIM       = 1,  // shimx64.efi found — distro uses signed shim chain (SB compatible)
+    LINUX_SB_SIGNED     = 2,  // Signed BOOTX64.EFI found without separate shim
+    LINUX_SB_UNSIGNED   = 3   // UEFI EFI boot files present but no signed shim detected
+} linux_sb_status_t;
+
+/**
+ * Detect Linux Secure Boot capability from ISO contents (no extraction needed)
+ *
+ * Scans the ISO file listing for shimx64.efi (the MS-signed first-stage bootloader
+ * shipped by major distros like Ubuntu, Fedora, Debian). Presence of shim strongly
+ * indicates the ISO supports UEFI Secure Boot out of the box.
+ *
+ * Parameters:
+ *   iso_path - Path to the ISO file
+ *
+ * Returns:
+ *   LINUX_SB_SHIM      - shimx64.efi found anywhere in ISO (Secure Boot ready)
+ *   LINUX_SB_UNSIGNED  - EFI boot files found but no shim detected
+ *   LINUX_SB_UNKNOWN   - No EFI boot files found or not a readable ISO
+ */
+linux_sb_status_t iso_detect_linux_sb_status(const char *iso_path);
+
+/**
  * List all files in ISO archive
  *
  * Extracts a complete list of all files and directories in the ISO,

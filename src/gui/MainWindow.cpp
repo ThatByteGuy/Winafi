@@ -51,7 +51,7 @@ void MainWindow::buildUi() {
     auto *nav = new QFrame(); nav->setObjectName("Nav"); nav->setFixedWidth(150);
     auto *navL = new QVBoxLayout(nav); navL->setSpacing(2);
     m_nav = new QButtonGroup(this);
-    const QStringList items{tr("Source"), tr("Target"), tr("Windows"), tr("Advanced")};
+    const QStringList items{tr("Source"), tr("Target"), tr("Options"), tr("Advanced")};
     for (int i = 0; i < items.size(); ++i) {
         auto *b = new QPushButton(items[i]); b->setObjectName("Nav"); b->setCheckable(true);
         if (i == 0) b->setChecked(true);
@@ -133,8 +133,16 @@ void MainWindow::onIsoChosen(const QString &path) {
     if (session && winafi_session_load_iso(session, path.toUtf8().constData()) == WINAFI_OK) {
         QString os = QString::fromUtf8(winafi_get_detected_os(session));
         bool isWin = os.contains("Windows", Qt::CaseInsensitive);
+        bool isLinux = os.contains("Linux", Qt::CaseInsensitive);
         m_source->setOsBadge(os);
-        m_customize->setWindowsIso(isWin);
+        if (isWin) {
+            m_customize->setWindowsIso(true);
+        } else if (isLinux) {
+            int sbStatus = static_cast<int>(winafi_get_linux_sb_status(session));
+            m_customize->setLinuxIso(sbStatus);
+        } else {
+            m_customize->setWindowsIso(false);
+        }
     }
     if (session) winafi_session_destroy(session);
     updateSummary();

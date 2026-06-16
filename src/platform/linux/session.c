@@ -753,6 +753,16 @@ const char *winafi_get_detected_os(winafi_session_t *session) {
 }
 
 /**
+ * winafi_get_linux_sb_status - Get Linux Secure Boot status for loaded ISO
+ */
+linux_sb_status_t winafi_get_linux_sb_status(winafi_session_t *session) {
+    if (!session) return LINUX_SB_UNKNOWN;
+    if (session->iso_info.os_type != ISO_OS_LINUX) return LINUX_SB_UNKNOWN;
+    if (session->iso_path[0] == '\0') return LINUX_SB_UNKNOWN;
+    return iso_detect_linux_sb_status(session->iso_path);
+}
+
+/**
  * winafi_get_image_option - Get detected image option from loaded ISO
  */
 winafi_image_option_t winafi_get_image_option(winafi_session_t *session) {

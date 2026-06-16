@@ -7,7 +7,10 @@
  * Progress callback type for Windows boot setup
  * Signature: void callback(int percent, const char *message, void *user_data)
  */
+#ifndef WINAFI_PROGRESS_CALLBACK_DEFINED
+#define WINAFI_PROGRESS_CALLBACK_DEFINED
 typedef void (*winafi_progress_callback_t)(int percent, const char *message, void *user_data);
+#endif
 
 /**
  * Windows Boot Setup

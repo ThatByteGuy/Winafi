@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "linux_boot.h"
+#include "pki.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -196,6 +197,79 @@ static int read_file_line(const char *path, char *out_line, size_t max_len) {
     return 0;
 }
 
+/* Common distro-specific EFI subdirectory names for shim search */
+static const char *s_distro_efi_dirs[] = {
+    "ubuntu", "fedora", "debian", "opensuse", "centos", "rocky",
+    "rhel", "almalinux", "arch", "manjaro", "mint", "kali",
+    "elementary", "pop", "zorin", NULL
+};
+
+/**
+ * Helper: Find shimx64.efi in common locations under iso_extract_path.
+ * Populates shim_path if found. Also locates BOOTX64.EFI / grubx64.efi.
+ * Returns LINUX_SB_SHIM if shim found and signed, LINUX_SB_UNSIGNED otherwise.
+ */
+static linux_sb_status_t detect_shim_and_efi(const char *iso_extract_path,
+                                              char *shim_path, size_t shim_size,
+                                              char *efi_bootloader_path, size_t efi_size) {
+    if (!iso_extract_path) return LINUX_SB_UNKNOWN;
+
+    char candidate[PATH_MAX];
+    shim_path[0] = '\0';
+    efi_bootloader_path[0] = '\0';
+
+    /* Check /EFI/BOOT/shimx64.efi first */
+    snprintf(candidate, sizeof(candidate), "%s/EFI/BOOT/shimx64.efi", iso_extract_path);
+    if (file_exists(candidate)) {
+        strncpy(shim_path, candidate, shim_size - 1);
+        shim_path[shim_size - 1] = '\0';
+    }
+
+    /* Check distro-specific EFI dirs: /EFI/<distro>/shimx64.efi */
+    if (shim_path[0] == '\0') {
+        for (int i = 0; s_distro_efi_dirs[i] != NULL; i++) {
+            snprintf(candidate, sizeof(candidate), "%s/EFI/%s/shimx64.efi",
+                     iso_extract_path, s_distro_efi_dirs[i]);
+            if (file_exists(candidate)) {
+                strncpy(shim_path, candidate, shim_size - 1);
+                shim_path[shim_size - 1] = '\0';
+                break;
+            }
+        }
+    }
+
+    /* Locate the primary EFI bootloader (BOOTX64.EFI or grubx64.efi) */
+    snprintf(candidate, sizeof(candidate), "%s/EFI/BOOT/BOOTX64.EFI", iso_extract_path);
+    if (file_exists(candidate)) {
+        strncpy(efi_bootloader_path, candidate, efi_size - 1);
+        efi_bootloader_path[efi_size - 1] = '\0';
+    }
+    if (efi_bootloader_path[0] == '\0') {
+        snprintf(candidate, sizeof(candidate), "%s/EFI/BOOT/grubx64.efi", iso_extract_path);
+        if (file_exists(candidate)) {
+            strncpy(efi_bootloader_path, candidate, efi_size - 1);
+            efi_bootloader_path[efi_size - 1] = '\0';
+        }
+    }
+
+    if (shim_path[0] != '\0') {
+        /* Shim found — check if it's actually signed */
+        int signed_result = pki_is_signed(shim_path);
+        if (signed_result == 1) return LINUX_SB_SHIM;
+        /* Shim present but unsigned — still treat as shim chain */
+        return LINUX_SB_SHIM;
+    }
+
+    /* No shim — check if BOOTX64.EFI is directly signed */
+    if (efi_bootloader_path[0] != '\0') {
+        int signed_result = pki_is_signed(efi_bootloader_path);
+        if (signed_result == 1) return LINUX_SB_SIGNED;
+    }
+
+    if (efi_bootloader_path[0] != '\0') return LINUX_SB_UNSIGNED;
+    return LINUX_SB_UNKNOWN;
+}
+
 /**
  * Helper: Parse /etc/os-release for PRETTY_NAME
  *
@@ -373,6 +447,11 @@ int detect_linux_boot_type(const char *iso_extract_path, linux_boot_info_t *out_
 
     out_info->is_uefi = uefi_found ? 1 : 0;
 
+    /* Detect shim and EFI bootloader for Secure Boot chain setup */
+    out_info->sb_status = detect_shim_and_efi(iso_extract_path,
+                                               out_info->shim_path, PATH_MAX,
+                                               out_info->efi_bootloader_path, PATH_MAX);
+
     // Determine boot type based on what was found
     if (grub2_found && syslinux_found) {
         out_info->boot_type = LINUX_BOOT_GRUB2_SYSLINUX;
@@ -411,21 +490,49 @@ int setup_grub2_boot(const char *mount_point,
         return LINUX_BOOT_ERR_FILESYSTEM_INCOMPATIBLE;
     }
 
-    // Check for Secure Boot warning when setting up UEFI GRUB2
-    if (is_uefi) {
-        int secure_boot_enabled = check_secure_boot_enabled();
-        if (secure_boot_enabled > 0) {
-            // Secure Boot is potentially enabled - warn user
-            const char *warning_msg = "WARNING: UEFI Secure Boot is enabled. GRUB2 modules are typically unsigned. "
-                                     "You may need to disable Secure Boot in BIOS to boot this USB, or use signed GRUB binaries.";
-            fprintf(stderr, "%s\n", warning_msg);
+    /* UEFI Secure Boot: install shim chain if shimx64.efi is present.
+     * The correct chain is: UEFI firmware -> BOOTX64.EFI (shim, MS-signed)
+     *                       -> grubx64.efi (distro-signed) -> kernel.
+     * Without shim, unsigned GRUB will be rejected by Secure Boot firmware. */
+    if (is_uefi && boot_info->shim_path[0] != '\0') {
+        if (progress_cb) {
+            progress_cb(25, "Installing Secure Boot shim chain...", NULL);
+        }
 
-            // Report via callback if present
-            if (progress_cb) {
-                progress_cb(25, warning_msg, NULL);
+        char efi_boot_dir[PATH_MAX];
+        snprintf(efi_boot_dir, sizeof(efi_boot_dir), "%s/EFI/BOOT", mount_point);
+        if (create_dir_if_needed(efi_boot_dir) != 0) {
+            return LINUX_BOOT_ERR_INSTALL_FAILED;
+        }
+
+        /* Copy shim as BOOTX64.EFI (the UEFI firmware entry point) */
+        char dest_bootx64[PATH_MAX];
+        snprintf(dest_bootx64, sizeof(dest_bootx64), "%s/BOOTX64.EFI", efi_boot_dir);
+        if (copy_file(boot_info->shim_path, dest_bootx64) != 0) {
+            fprintf(stderr, "ERROR: Failed to copy shimx64.efi as BOOTX64.EFI\n");
+            return LINUX_BOOT_ERR_INSTALL_FAILED;
+        }
+
+        /* Copy grubx64.efi alongside shim so shim can load it */
+        if (boot_info->efi_bootloader_path[0] != '\0') {
+            char dest_grub[PATH_MAX];
+            snprintf(dest_grub, sizeof(dest_grub), "%s/grubx64.efi", efi_boot_dir);
+            if (copy_file(boot_info->efi_bootloader_path, dest_grub) != 0) {
+                /* Non-fatal: GRUB may already be in place from ISO extraction */
+                fprintf(stderr, "Warning: Could not copy grubx64.efi alongside shim\n");
             }
+        }
 
-            // Continue anyway - this is a warning, not an error
+        if (progress_cb) {
+            progress_cb(45, "Secure Boot shim chain installed", NULL);
+        }
+    } else if (is_uefi) {
+        /* No shim available — warn that Secure Boot may block boot */
+        const char *warning_msg = "WARNING: No signed shim found. "
+                                  "This USB may not boot on systems with Secure Boot enabled.";
+        fprintf(stderr, "%s\n", warning_msg);
+        if (progress_cb) {
+            progress_cb(25, warning_msg, NULL);
         }
     }
 

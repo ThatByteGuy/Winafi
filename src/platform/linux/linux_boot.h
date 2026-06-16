@@ -3,6 +3,7 @@
 
 #include <limits.h>
 #include <sys/param.h>
+#include "iso_extract.h"
 
 /**
  * Linux Boot Setup
@@ -50,6 +51,9 @@ typedef struct {
     char ldlinux_sys_path[PATH_MAX];               // Path to ldlinux.sys
     char vesamenu_c32_path[PATH_MAX];              // Path to vesamenu.c32
     char distro_name[256];                         // Distro name from /etc/os-release
+    char shim_path[PATH_MAX];                      // Full path to shimx64.efi (empty if not found)
+    char efi_bootloader_path[PATH_MAX];            // Full path to BOOTX64.EFI or grubx64.efi
+    linux_sb_status_t sb_status;                   // Secure Boot support status
 } linux_boot_info_t;
 
 /**
@@ -66,7 +70,10 @@ typedef struct {
  * Progress callback type for Linux boot setup
  * Signature: void callback(int percent, const char *message, void *user_data)
  */
+#ifndef WINAFI_PROGRESS_CALLBACK_DEFINED
+#define WINAFI_PROGRESS_CALLBACK_DEFINED
 typedef void (*winafi_progress_callback_t)(int percent, const char *message, void *user_data);
+#endif
 
 /**
  * Detect Linux bootloader type from extracted ISO files

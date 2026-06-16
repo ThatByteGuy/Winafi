@@ -699,6 +699,53 @@ int iso_detect_os(const char *iso_path, iso_info_t *out_info) {
 }
 
 /**
+ * Detect Linux Secure Boot status by scanning ISO for shimx64.efi
+ */
+linux_sb_status_t iso_detect_linux_sb_status(const char *iso_path) {
+    if (!iso_path) return LINUX_SB_UNKNOWN;
+
+    struct archive *a = iso_open_archive(iso_path);
+    if (!a) return LINUX_SB_UNKNOWN;
+
+    int found_efi = 0;
+    int found_shim = 0;
+
+    struct archive_entry *entry;
+    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+        const char *path = archive_entry_pathname(entry);
+        if (!path) { archive_read_data_skip(a); continue; }
+
+        /* Case-insensitive check for shimx64.efi anywhere in the path */
+        const char *p = path;
+        while (*p) {
+            if ((*p == 's' || *p == 'S') &&
+                strncasecmp(p, "shimx64.efi", 11) == 0) {
+                found_shim = 1;
+                break;
+            }
+            p++;
+        }
+
+        /* Track presence of any EFI boot files */
+        if (strncasecmp(path, "efi/", 4) == 0 ||
+            strncasecmp(path, "/efi/", 5) == 0 ||
+            contains_file(path, "bootx64.efi") ||
+            contains_file(path, "grubx64.efi")) {
+            found_efi = 1;
+        }
+
+        if (found_shim) break;
+        archive_read_data_skip(a);
+    }
+
+    archive_read_free(a);
+
+    if (found_shim) return LINUX_SB_SHIM;
+    if (found_efi)  return LINUX_SB_UNSIGNED;
+    return LINUX_SB_UNKNOWN;
+}
+
+/**
  * List all files in ISO
  */
 int iso_list_files(const char *iso_path, char ***out_files, int *out_count) {
