@@ -9,7 +9,7 @@
 #define WUE_BYPASS_SECUREBOOT     0x0002  // LabConfig BypassSecureBootCheck
 #define WUE_NO_ONLINE_ACCOUNT     0x0004  // OOBE: skip Microsoft account requirement
 #define WUE_NO_DATA_COLLECTION    0x0008  // OOBE: disable diagnostic data
-#define WUE_OFFLINE_DRIVES        0x0010  // offlineServicing: disable internal drives
+#define WUE_OFFLINE_DRIVES        0x0010  // offlineServicing: SanPolicy 4, offline internal fixed disks (WinToGo)
 #define WUE_DUPLICATE_LOCALE      0x0020  // OOBE: match locale to ISO language
 #define WUE_SET_USER              0x0040  // Create a local account with given username
 #define WUE_DISABLE_BITLOCKER     0x0080  // Disable BitLocker during install
@@ -18,6 +18,7 @@
 #define WUE_BYPASS_STORAGE        0x0400  // LabConfig BypassStorageCheck
 #define WUE_SILENT_INSTALL        0x0800  // Suppress install UI (windowsPE pass)
 #define WUE_QOL_ENHANCEMENTS      0x1000  // Disable suggested apps, Cortana, Teams, etc.
+#define WUE_HIDE_INSTALL_MEDIA    0x2000  // windowsPE: mark installer USB read-only (always on for standard installs)
 
 // Convenience mask: all five Windows 11 compatibility bypasses ("Apply all").
 #define WUE_BYPASS_ALL  (WUE_BYPASS_TPM | WUE_BYPASS_SECUREBOOT | WUE_BYPASS_RAM | \

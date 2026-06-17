@@ -105,12 +105,18 @@ if(Qt5_FOUND AND BUILD_GUI)
     )
     target_link_libraries(winafi-gui PRIVATE winafi_gui winafi-core)
     target_include_directories(winafi-gui PRIVATE ${CMAKE_SOURCE_DIR}/include)
-    install(TARGETS winafi-gui DESTINATION bin)
+    install(TARGETS winafi-gui
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()
 
 # Installation
-install(TARGETS winafi DESTINATION bin)
-install(TARGETS winafi-core DESTINATION lib)
+install(TARGETS winafi
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS winafi-core
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
 install(FILES ${CMAKE_SOURCE_DIR}/include/winafi.h DESTINATION include)
 install(FILES errors.txt DESTINATION share/winafi)
 install(FILES assets/uefi-ntfs/bootx64.efi DESTINATION share/winafi/assets/uefi-ntfs)

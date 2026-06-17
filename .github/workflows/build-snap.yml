@@ -2,6 +2,10 @@ name: Build Snap
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -10,6 +14,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Prepare snapcraft metadata
+        run: |
+          cp snap/snapcraft.yaml snapcraft.yaml
+          sed -i "s/^version:.*/version: '${{ inputs.version }}'/" snapcraft.yaml
+          sed -i "s/- -DWINAFI_BUILD_VERSION=.*/- -DWINAFI_BUILD_VERSION=${{ inputs.version }}/" snapcraft.yaml
 
       - name: Build snap
         uses: snapcore/action-build@v1

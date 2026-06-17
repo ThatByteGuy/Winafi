@@ -13,7 +13,8 @@ ARCH="$(uname -m)"
 STAGE="dist/winafi-${VERSION}-portable-${ARCH}"
 
 echo "Building Winafi portable ${VERSION} (${ARCH})"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=ON -DBUILD_TESTS=OFF >/dev/null
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=ON -DBUILD_TESTS=OFF \
+    -DWINAFI_BUILD_VERSION="${VERSION}" >/dev/null
 cmake --build build -j"$(nproc)"
 
 rm -rf "$STAGE"

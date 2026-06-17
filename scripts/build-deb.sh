@@ -11,7 +11,8 @@ echo "Building Winafi Debian package v${VERSION}"
 # Build application
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTS=OFF -DWINAFI_BUILD_VERSION="${VERSION}"
 make -j$(nproc)
 
 # Install to staging directory

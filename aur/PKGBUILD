@@ -9,7 +9,7 @@ license=('GPL3')
 depends=(
     'qt5-base'
     'libarchive'
-    'libparted'
+    'parted'
     'libcdio'
     'openssl'
     'curl'
@@ -32,7 +32,8 @@ build() {
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=ON \
-        -DBUILD_TESTS=OFF
+        -DBUILD_TESTS=OFF \
+        -DWINAFI_BUILD_VERSION="${pkgver}"
     make
 }
 

@@ -1,7 +1,7 @@
 app-id: com.github.alphaglider25.winafi
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
+runtime: org.kde.Platform
+runtime-version: '5.15-24.08'
+sdk: org.kde.Sdk
 command: winafi-gui
 
 finish-args:
@@ -14,6 +14,8 @@ finish-args:
 
 modules:
   - name: libparted
+    config-opts:
+      - --disable-device-mapper
     sources:
       - type: archive
         url: https://ftp.gnu.org/gnu/parted/parted-3.5.tar.xz
@@ -21,20 +23,29 @@ modules:
 
   - name: libarchive
     buildsystem: cmake-ninja
+    config-opts:
+      - -DENABLE_TEST=OFF
     sources:
       - type: archive
         url: https://github.com/libarchive/libarchive/releases/download/v3.7.2/libarchive-3.7.2.tar.xz
         sha256: 04357661e6717b6941682cde02ad741ae4819c67a260593dfb2431861b251acb
 
+  - name: libcdio
+    config-opts:
+      - --disable-cddb
+    sources:
+      - type: archive
+        url: https://ftp.gnu.org/gnu/libcdio/libcdio-2.1.0.tar.bz2
+        sha256: 8550e9589dbd594bfac93b81ecf129b1dc9d0d51e90f9696f1b2f9b2af32712b
+
   - name: winafi
     buildsystem: cmake-ninja
     builddir: build
     sources:
-      - type: git
-        url: https://github.com/AlphaGlider25/Winafi.git
-        branch: main
-        commit: HEAD
+      - type: dir
+        path: ..
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DBUILD_GUI=ON
       - -DBUILD_TESTS=OFF
+      - -DWINAFI_BUILD_VERSION=0.0.5

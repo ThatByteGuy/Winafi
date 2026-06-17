@@ -1,6 +1,7 @@
 /*
  * test_proc_utils.c - Test suite for /proc filesystem utilities
  */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include "platform/linux/proc_utils.h"

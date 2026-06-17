@@ -1,4 +1,5 @@
 // tests/unit/test_wue.c
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,13 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include "platform/linux/wue.h"
+
+static void require_true(int condition, const char *message) {
+    if (!condition) {
+        fprintf(stderr, "FAIL: %s\n", message);
+        exit(1);
+    }
+}
 
 static void test_generate_xml_bypass_tpm(void) {
     char *xml = wue_generate_xml(WUE_BYPASS_TPM | WUE_BYPASS_SECUREBOOT, NULL, WUE_ARCH_X86_64);
@@ -84,7 +92,28 @@ static void test_generate_xml_with_username(void) {
 
 static void test_generate_xml_zero_flags_returns_null(void) {
     char *xml = wue_generate_xml(0, NULL, WUE_ARCH_X86_64);
-    assert(xml == NULL);
+    require_true(xml == NULL, "zero WUE flags should not generate XML");
+}
+
+static void test_hide_install_media_always_emits_windowspe(void) {
+    char *xml = wue_generate_xml(WUE_HIDE_INSTALL_MEDIA, NULL, WUE_ARCH_X86_64);
+    require_true(xml != NULL, "hide-install-media XML should be generated");
+    require_true(strstr(xml, "pass=\"windowsPE\"") != NULL, "hide-install-media should run in windowsPE");
+    require_true(strstr(xml, "RunSynchronous") != NULL, "hide-install-media should use RunSynchronous");
+    require_true(strstr(xml, "Set-Disk") != NULL, "hide-install-media should mark disks read-only");
+    require_true(strstr(xml, "install.wim") != NULL, "hide-install-media should detect installer volumes");
+    require_true(strstr(xml, "SanPolicy") == NULL, "hide-install-media should not depend on SanPolicy");
+    free(xml);
+}
+
+static void test_hide_install_media_runs_before_bypasses(void) {
+    char *xml = wue_generate_xml(WUE_HIDE_INSTALL_MEDIA | WUE_BYPASS_TPM, NULL, WUE_ARCH_X86_64);
+    require_true(xml != NULL, "combined hide-install-media and bypass XML should be generated");
+    const char *hide = strstr(xml, "block Windows Setup from installing to the USB media");
+    const char *bypass = strstr(xml, "BypassTPMCheck");
+    require_true(hide != NULL && bypass != NULL, "hide-install-media and bypass commands should both exist");
+    require_true(hide < bypass, "hide-install-media should run before bypass commands");
+    free(xml);
 }
 
 static void test_inject_xml_to_mount(void) {
@@ -94,7 +123,7 @@ static void test_inject_xml_to_mount(void) {
     char *xml = wue_generate_xml(WUE_BYPASS_TPM, NULL, WUE_ARCH_X86_64);
     assert(xml != NULL);
     int rc = wue_inject_xml(xml, tmpdir);
-    assert(rc == 0);
+    require_true(rc == 0, "wue_inject_xml should succeed");
     free(xml);
 
     // Verify file was written to correct location
@@ -116,6 +145,8 @@ int main(void) {
     test_generate_xml_no_online_account();
     test_generate_xml_with_username();
     test_generate_xml_zero_flags_returns_null();
+    test_hide_install_media_always_emits_windowspe();
+    test_hide_install_media_runs_before_bypasses();
     test_inject_xml_to_mount();
     printf("All wue tests passed\n");
     return 0;

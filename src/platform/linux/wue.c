@@ -48,6 +48,25 @@ static void sb_append(strbuf_t *sb, const char *fmt, ...) {
     sb->buf[sb->len] = '\0';
 }
 
+// PowerShell run during windowsPE: mark every USB disk read-only so Setup cannot
+// install to the installer media, while install.wim remains readable.
+static void sb_append_hide_install_media_cmd(strbuf_t *sb, int order) {
+    sb_append(sb, "        <RunSynchronousCommand wcm:action=\"add\">\n");
+    sb_append(sb, "          <Order>%d</Order>\n", order);
+    sb_append(sb, "          <Description>Winafi: block Windows Setup from installing to the USB media</Description>\n");
+    sb_append(sb,
+        "          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"&amp; { "
+        "Get-Disk | Where-Object { $_.BusType -eq 'USB' } | ForEach-Object { "
+        "Set-Disk -Number $_.Number -IsReadOnly $true -ErrorAction SilentlyContinue }; "
+        "65..90 | ForEach-Object { $L=[char]$_; $r=&quot;$L`:\\&quot;; "
+        "if ((Test-Path &quot;$r`sources\\install.wim&quot;) -or (Test-Path &quot;$r`sources\\install.esd&quot;) "
+        "-or (Test-Path &quot;$r`sources\\install.swm&quot;) -or (Test-Path &quot;$r`autounattend.xml&quot;)) { "
+        "$n=(Get-Partition -DriveLetter $L -ErrorAction SilentlyContinue).DiskNumber; "
+        "if ($null -ne $n) { Set-Disk -Number $n -IsReadOnly $true -ErrorAction SilentlyContinue } } } }\""
+        "</Path>\n");
+    sb_append(sb, "        </RunSynchronousCommand>\n");
+}
+
 char *wue_generate_xml(int flags, const char *username, wue_arch_t arch) {
     if (flags == 0) return NULL;
     if (arch < WUE_ARCH_X86_32 || arch > WUE_ARCH_ARM_64) arch = WUE_ARCH_X86_64;
@@ -59,7 +78,8 @@ char *wue_generate_xml(int flags, const char *username, wue_arch_t arch) {
     sb_append(&sb, "<unattend xmlns=\"urn:schemas-microsoft-com:unattend\">\n");
 
     // --- windowsPE pass ---
-    if (flags & (WUE_BYPASS_MASK | WUE_SILENT_INSTALL)) {
+    int needs_winpe = flags & (WUE_BYPASS_MASK | WUE_SILENT_INSTALL | WUE_HIDE_INSTALL_MEDIA);
+    if (needs_winpe) {
         sb_append(&sb, "  <settings pass=\"windowsPE\">\n");
         sb_append(&sb,
             "    <component name=\"Microsoft-Windows-Setup\" processorArchitecture=\"%s\"\n"
@@ -71,26 +91,30 @@ char *wue_generate_xml(int flags, const char *username, wue_arch_t arch) {
         sb_append(&sb, "        <ProductKey><Key /></ProductKey>\n");
         sb_append(&sb, "      </UserData>\n");
 
-        // Emit one LabConfig RunSynchronousCommand per ENABLED bypass, with
-        // sequential Order values. Each requirement is independently toggleable.
-        static const struct { int flag; const char *key; } bypasses[] = {
-            { WUE_BYPASS_TPM,        "BypassTPMCheck" },
-            { WUE_BYPASS_SECUREBOOT, "BypassSecureBootCheck" },
-            { WUE_BYPASS_RAM,        "BypassRAMCheck" },
-            { WUE_BYPASS_CPU,        "BypassCPUCheck" },
-            { WUE_BYPASS_STORAGE,    "BypassStorageCheck" },
-        };
-        if (flags & WUE_BYPASS_MASK) {
+        int run_sync = flags & (WUE_BYPASS_MASK | WUE_HIDE_INSTALL_MEDIA);
+        if (run_sync) {
             sb_append(&sb, "      <RunSynchronous>\n");
             int order = 1;
-            for (size_t i = 0; i < sizeof(bypasses) / sizeof(bypasses[0]); i++) {
-                if (!(flags & bypasses[i].flag)) continue;
-                sb_append(&sb, "        <RunSynchronousCommand wcm:action=\"add\">\n");
-                sb_append(&sb, "          <Order>%d</Order>\n", order++);
-                sb_append(&sb,
-                    "          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v %s"
-                    " /t REG_DWORD /d 1 /f</Path>\n", bypasses[i].key);
-                sb_append(&sb, "        </RunSynchronousCommand>\n");
+            if (flags & WUE_HIDE_INSTALL_MEDIA) {
+                sb_append_hide_install_media_cmd(&sb, order++);
+            }
+            if (flags & WUE_BYPASS_MASK) {
+                static const struct { int flag; const char *key; } bypasses[] = {
+                    { WUE_BYPASS_TPM,        "BypassTPMCheck" },
+                    { WUE_BYPASS_SECUREBOOT, "BypassSecureBootCheck" },
+                    { WUE_BYPASS_RAM,        "BypassRAMCheck" },
+                    { WUE_BYPASS_CPU,        "BypassCPUCheck" },
+                    { WUE_BYPASS_STORAGE,    "BypassStorageCheck" },
+                };
+                for (size_t i = 0; i < sizeof(bypasses) / sizeof(bypasses[0]); i++) {
+                    if (!(flags & bypasses[i].flag)) continue;
+                    sb_append(&sb, "        <RunSynchronousCommand wcm:action=\"add\">\n");
+                    sb_append(&sb, "          <Order>%d</Order>\n", order++);
+                    sb_append(&sb,
+                        "          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v %s"
+                        " /t REG_DWORD /d 1 /f</Path>\n", bypasses[i].key);
+                    sb_append(&sb, "        </RunSynchronousCommand>\n");
+                }
             }
             sb_append(&sb, "      </RunSynchronous>\n");
         }
@@ -104,7 +128,7 @@ char *wue_generate_xml(int flags, const char *username, wue_arch_t arch) {
         sb_append(&sb,
             "    <component name=\"Microsoft-Windows-PartitionManager\" processorArchitecture=\"%s\"\n"
             "      language=\"neutral\" publicKeyToken=\"31bf3856ad364e35\" versionScope=\"nonSxS\">\n", aname);
-        sb_append(&sb, "      <SanPolicy>4</SanPolicy>\n"); // Offline all internal disks
+        sb_append(&sb, "      <SanPolicy>4</SanPolicy>\n"); // Offline internal fixed disks for WinToGo.
         sb_append(&sb, "    </component>\n");
         sb_append(&sb, "  </settings>\n");
     }

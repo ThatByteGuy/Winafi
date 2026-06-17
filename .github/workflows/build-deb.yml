@@ -2,6 +2,10 @@ name: Build Debian Package
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -16,7 +20,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config ruby-dev \
-            libqt5widgets5 qt5-qmake libqt5core5a \
+            qtbase5-dev libqt5widgets5 libqt5core5a \
             libudev-dev libparted-dev libarchive-dev \
             libcdio-dev libssl-dev libcurl4-openssl-dev
 
@@ -24,7 +28,7 @@ jobs:
         run: sudo gem install fpm
 
       - name: Build Debian package
-        run: bash scripts/build-deb.sh "${{ github.ref_name }}"
+        run: bash scripts/build-deb.sh "${{ inputs.version }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

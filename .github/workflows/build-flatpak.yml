@@ -2,6 +2,10 @@ name: Build Flatpak
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -14,17 +18,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set Flatpak version
+        run: |
+          sed -i "s/- -DWINAFI_BUILD_VERSION=.*/- -DWINAFI_BUILD_VERSION=${{ inputs.version }}/" flatpak/com.github.alphaglider25.winafi.yml
+
       - name: Build Flatpak
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: Winafi.flatpak
+          bundle: Winafi-${{ inputs.version }}.flatpak
           manifest-path: flatpak/com.github.alphaglider25.winafi.yml
           cache: true
-          cache-key: flatpak-builder-${{ github.ref_name }}
+          cache-key: flatpak-builder-${{ inputs.version }}-${{ github.sha }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: flatpak
-          path: Winafi.flatpak
+          path: Winafi-${{ inputs.version }}.flatpak
           retention-days: 1

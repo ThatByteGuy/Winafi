@@ -28,6 +28,9 @@ typedef struct {
    NOTE: Requires root (or CAP_SYS_RAWIO) to read SMART data. */
 int smart_query(const char *devnode, smart_info_t *info);
 
+/* Compatibility wrapper for callers that use the device-info naming pattern. */
+int smart_get_info(const char *devnode, smart_info_t *info);
+
 /* Returns 1 if SMART is supported for this device (best-effort check via sysfs),
    0 if not supported or unknown, -1 on error. */
 int smart_is_supported(const char *devnode);

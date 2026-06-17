@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 /* WINAFI_VERSION is defined via CMake compile definition */
 #ifndef WINAFI_VERSION
@@ -19,14 +20,39 @@ int update_strip_v(const char *version, char *out_buf, size_t out_size) {
     return 0;
 }
 
+static int parse_version_components(const char *version, int out[3]) {
+    if (!version || !out || version[0] == '\0') return -1;
+
+    int component = 0;
+    const unsigned char *p = (const unsigned char *)version;
+
+    while (*p) {
+        if (component >= 3 || !isdigit(*p)) return -1;
+
+        int value = 0;
+        while (*p && isdigit(*p)) {
+            value = (value * 10) + (*p - '0');
+            p++;
+        }
+        out[component++] = value;
+
+        if (*p == '\0') break;
+        if (*p != '.') return -1;
+        p++;
+        if (*p == '\0') return -1;
+    }
+
+    return 0;
+}
+
 int update_version_compare(const char *a, const char *b) {
     if (!a || !b) return -2;
     int va[3] = {0,0,0}, vb[3] = {0,0,0};
     char ta[64], tb[64];
     if (update_strip_v(a, ta, sizeof(ta)) < 0) return -2;
     if (update_strip_v(b, tb, sizeof(tb)) < 0) return -2;
-    sscanf(ta, "%d.%d.%d", &va[0], &va[1], &va[2]);
-    sscanf(tb, "%d.%d.%d", &vb[0], &vb[1], &vb[2]);
+    if (parse_version_components(ta, va) < 0) return -2;
+    if (parse_version_components(tb, vb) < 0) return -2;
     for (int i = 0; i < 3; i++) {
         if (va[i] != vb[i]) return va[i] - vb[i];
     }
@@ -38,7 +64,7 @@ int update_build_url(const char *tag, char *out_buf, size_t out_size) {
     char clean[64];
     if (update_strip_v(tag, clean, sizeof(clean)) < 0) return -1;
     int n = snprintf(out_buf, out_size,
-        "https://github.com/AlphaGlider25/Winafi-Linux/releases/tag/v%s", clean);
+        "https://github.com/AlphaGlider25/Winafi/releases/tag/v%s", clean);
     if (n < 0 || (size_t)n >= out_size) return -1;
     return 0;
 }

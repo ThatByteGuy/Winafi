@@ -4,6 +4,9 @@ project(Winafi
     DESCRIPTION "Winafi - USB bootable drive utility for Linux"
     LANGUAGES C CXX
 )
+set(WINAFI_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING "Version string embedded in Winafi binaries")
+
+include(GNUInstallDirs)
 
 # C17 standard required
 set(CMAKE_C_STANDARD 17)
@@ -50,7 +53,7 @@ endif()
 
 # Version info
 add_compile_definitions(
-    WINAFI_VERSION="${PROJECT_VERSION}"
+    WINAFI_VERSION="${WINAFI_BUILD_VERSION}"
     WINAFI_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     WINAFI_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     WINAFI_VERSION_PATCH=${PROJECT_VERSION_PATCH}
@@ -110,7 +113,7 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 # Print configuration summary
 message(STATUS "")
 message(STATUS "=== Winafi Configuration ===")
-message(STATUS "Version: ${PROJECT_VERSION}")
+message(STATUS "Version: ${WINAFI_BUILD_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "C Flags: ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")

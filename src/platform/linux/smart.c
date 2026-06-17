@@ -135,3 +135,8 @@ int smart_query(const char *devnode, smart_info_t *info)
 }
 
 #endif /* HAVE_LIBATASMART */
+
+int smart_get_info(const char *devnode, smart_info_t *info)
+{
+    return smart_query(devnode, info);
+}

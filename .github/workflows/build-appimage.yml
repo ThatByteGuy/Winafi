@@ -2,6 +2,10 @@ name: Build AppImage
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -16,14 +20,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config \
-            libqt5widgets5 qt5-qmake libqt5core5a \
+            qtbase5-dev libqt5widgets5 libqt5core5a \
             libudev-dev libparted-dev libarchive-dev \
             libcdio-dev libssl-dev libcurl4-openssl-dev \
             appstream desktop-file-utils libfuse2 fuse
 
       - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
-          bash scripts/build-appimage.sh "${{ github.ref_name }}" x86_64
+          bash scripts/build-appimage.sh "${{ inputs.version }}" x86_64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

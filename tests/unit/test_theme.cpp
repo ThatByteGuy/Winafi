@@ -1,4 +1,5 @@
 #include "theme/Theme.h"
+#undef NDEBUG
 #include <cassert>
 #include <cstdio>
 int main() {

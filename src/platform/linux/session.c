@@ -599,9 +599,13 @@ int winafi_session_execute(winafi_session_t *session) {
         // Windows-specific boot setup
         log_info("%s", "Setting up Windows boot environment");
 
-        // Apply Windows unattended customization. Keep the installer USB out of
-        // Windows Setup's install-target list by default using SanPolicy.
-        int effective_unattend_flags = session->unattend_flags | WUE_OFFLINE_DRIVES;
+        // Always inject autounattend.xml for standard installs so Windows Setup marks the
+        // installer USB read-only during windowsPE (cannot be selected as install target).
+        // WinToGo skips this — the USB is the intended install destination there.
+        int effective_unattend_flags = session->unattend_flags;
+        if (session->image_option != WINAFI_IMAGE_WINTOGO) {
+            effective_unattend_flags |= WUE_HIDE_INSTALL_MEDIA;
+        }
         if (effective_unattend_flags != 0) {
             log_info("Injecting unattend customization (flags 0x%04x)", effective_unattend_flags);
             char *auto_xml = wue_generate_xml(effective_unattend_flags,

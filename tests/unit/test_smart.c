@@ -1,4 +1,5 @@
 // tests/unit/test_smart.c
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include "platform/linux/smart.h"

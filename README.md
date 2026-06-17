@@ -1,7 +1,5 @@
 # Winafi - Create Bootable USB Drives on Linux
 
-**Status: Phase 6 Complete** (May 2026) with full GUI, settings, networking and advanced features
-
 Winafi is a Linux-native tool for creating bootable USB drives from ISO files, built from scratch with native libraries and best practices. Use it to boot Windows, Linux, or other operating systems from USB.
 
 ## What Winafi Does

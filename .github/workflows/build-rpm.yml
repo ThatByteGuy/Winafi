@@ -2,6 +2,10 @@ name: Build RPM Package
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -19,13 +23,14 @@ jobs:
             gcc gcc-c++ make cmake pkg-config ruby-devel \
             qt5-qtbase-devel \
             systemd-devel parted-devel libarchive-devel \
-            libcdio-devel openssl-devel libcurl-devel libudev-devel
+            libcdio-devel openssl-devel libcurl-devel \
+            rpm-build
 
       - name: Install FPM
         run: gem install fpm
 
       - name: Build RPM package
-        run: bash scripts/build-rpm.sh "${{ github.ref_name }}"
+        run: bash scripts/build-rpm.sh "${{ inputs.version }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

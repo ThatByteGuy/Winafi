@@ -11,13 +11,13 @@ confinement: classic
 
 apps:
   winafi:
-    command: bin/winafi
+    command: usr/bin/winafi
     plugs:
       - hardware-observe
       - block-devices
       - system-observe
   winafi-gui:
-    command: bin/winafi-gui
+    command: usr/bin/winafi-gui
     plugs:
       - hardware-observe
       - block-devices
@@ -25,7 +25,7 @@ apps:
       - x11
       - wayland
       - desktop
-    desktop: share/applications/winafi.desktop
+    desktop: usr/share/applications/winafi.desktop
 
 parts:
   winafi:
@@ -35,13 +35,13 @@ parts:
       - -DCMAKE_INSTALL_PREFIX=/usr
       - -DCMAKE_BUILD_TYPE=Release
       - -DBUILD_GUI=ON
+      - -DBUILD_TESTS=OFF
+      - -DWINAFI_BUILD_VERSION=0.0.5
     build-packages:
       - build-essential
       - cmake
       - pkg-config
-      - libqt5widgets5
-      - qt5-qmake
-      - libqt5core5a
+      - qtbase5-dev
       - libudev-dev
       - libparted-dev
       - libarchive-dev

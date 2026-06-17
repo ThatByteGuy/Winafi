@@ -1,5 +1,6 @@
 #include "sections/WindowsCustomizeSection.h"
 #include "platform/linux/wue.h"
+#undef NDEBUG
 #include <QApplication>
 #include <QCheckBox>
 #include <cassert>

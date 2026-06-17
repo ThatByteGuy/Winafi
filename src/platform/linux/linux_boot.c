@@ -165,8 +165,9 @@ static int read_file_line(const char *path, char *out_line, size_t max_len) {
         *newline = '\0';
     }
 
-    // Copy to output
-    snprintf(out_line, max_len, "%s", buffer);
+    size_t copy_len = strnlen(buffer, max_len - 1);
+    memcpy(out_line, buffer, copy_len);
+    out_line[copy_len] = '\0';
 
     return 0;
 }
@@ -544,7 +545,11 @@ int setup_grub2_boot(const char *mount_point,
         }
 
         // Construct modules directory path
-        snprintf(src_modules_dir, sizeof(src_modules_dir), "%s/%s", cfg_dir, modules_dir);
+        if (snprintf(src_modules_dir, sizeof(src_modules_dir), "%s/%s",
+                     cfg_dir, modules_dir) < 0 ||
+            strlen(cfg_dir) + 1 + strlen(modules_dir) >= sizeof(src_modules_dir)) {
+            return LINUX_BOOT_ERR_INSTALL_FAILED;
+        }
 
         // Try to copy modules if directory exists
         if (is_directory(src_modules_dir)) {
@@ -553,7 +558,12 @@ int setup_grub2_boot(const char *mount_point,
                 struct dirent *entry;
                 while ((entry = readdir(dir)) != NULL) {
                     if (entry->d_type == DT_REG && strstr(entry->d_name, ".mod")) {
-                        snprintf(path, sizeof(path), "%s/%s", src_modules_dir, entry->d_name);
+                        if (snprintf(path, sizeof(path), "%s/%s",
+                                     src_modules_dir, entry->d_name) < 0 ||
+                            strlen(src_modules_dir) + 1 + strlen(entry->d_name) >= sizeof(path)) {
+                            closedir(dir);
+                            return LINUX_BOOT_ERR_INSTALL_FAILED;
+                        }
                         char dest_path[PATH_MAX + 32];
                         snprintf(dest_path, sizeof(dest_path), "%s/boot/grub/%s/%s",
                                  mount_point, modules_dir, entry->d_name);
@@ -665,7 +675,11 @@ int setup_syslinux_boot(const char *mount_point,
                 if (entry->d_type == DT_REG) {
                     const char *ext = strrchr(entry->d_name, '.');
                     if (ext && (strcmp(ext, ".c32") == 0 || strcmp(ext, ".menu") == 0)) {
-                        snprintf(path, sizeof(path), "%s/%s", src_dir, entry->d_name);
+                        if (snprintf(path, sizeof(path), "%s/%s", src_dir, entry->d_name) < 0 ||
+                            strlen(src_dir) + 1 + strlen(entry->d_name) >= sizeof(path)) {
+                            closedir(dir);
+                            return LINUX_BOOT_ERR_INSTALL_FAILED;
+                        }
                         char dest_path[PATH_MAX + 32];
                         snprintf(dest_path, sizeof(dest_path), "%s/%s/%s",
                                  mount_point, target_dir, entry->d_name);

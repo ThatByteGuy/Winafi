@@ -2,6 +2,10 @@ name: Build Arch Package
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -27,15 +31,16 @@ jobs:
           mkdir -p /tmp/winafi-build
           cp -r . /tmp/winafi-build
           cd /tmp/winafi-build/aur
-          sed -i "s/pkgver=.*/pkgver=$(echo ${{ github.ref_name }} | sed 's/v//')/" PKGBUILD
+          sed -i "s/pkgver=.*/pkgver=${{ inputs.version }}/" PKGBUILD
           sed -i "s/sha256sums=.*/sha256sums=('SKIP')/" PKGBUILD
 
           # Create non-root user for building (makepkg requires non-root)
           useradd -m builder || true
           chown -R builder:builder /tmp/winafi-build
 
-          # Build as non-root user
-          su - builder -c "cd /tmp/winafi-build/aur && makepkg -si --noconfirm --skippgpcheck"
+          # Build as non-root user. Dependencies are installed by the root
+          # workflow step above; do not ask makepkg to install anything via sudo.
+          su - builder -c "cd /tmp/winafi-build/aur && makepkg --noconfirm --skippgpcheck"
 
       - name: Copy artifacts
         run: |

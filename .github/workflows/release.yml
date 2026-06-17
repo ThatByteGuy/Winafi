@@ -23,43 +23,54 @@ jobs:
     name: Build AppImage
     needs: setup
     uses: ./.github/workflows/build-appimage.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   build-deb:
     name: Build Debian Package
     needs: setup
     uses: ./.github/workflows/build-deb.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   build-rpm:
     name: Build RPM Package
     needs: setup
     uses: ./.github/workflows/build-rpm.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   build-flatpak:
     name: Build Flatpak
     needs: setup
     uses: ./.github/workflows/build-flatpak.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   build-snap:
     name: Build Snap
     needs: setup
     uses: ./.github/workflows/build-snap.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   build-arch:
     name: Build Arch Package
     needs: setup
     uses: ./.github/workflows/build-arch.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
     secrets: inherit
 
   publish:
     name: Publish Release Notes
     needs: [setup, build-appimage, build-deb, build-rpm, build-flatpak, build-snap, build-arch]
     runs-on: ubuntu-latest
-    if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -70,8 +81,11 @@ jobs:
           path: artifacts
 
       - name: Update Release with artifacts
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
           token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: Winafi v${{ needs.setup.outputs.version }}
           generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -18,7 +18,8 @@ rm -rf "${BUILD_DIR}"
 # Build the application
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=ON
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=ON \
+    -DBUILD_TESTS=OFF -DWINAFI_BUILD_VERSION="${VERSION}"
 make -j$(nproc)
 make install DESTDIR="${INSTALL_DIR}"
 
@@ -26,11 +27,12 @@ make install DESTDIR="${INSTALL_DIR}"
 mkdir -p "${APPDIR}/usr/bin"
 mkdir -p "${APPDIR}/usr/lib"
 mkdir -p "${APPDIR}/usr/share/applications"
-mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+mkdir -p "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
 
 # Copy application files
 cp "${INSTALL_DIR}/usr/bin/winafi-gui" "${APPDIR}/usr/bin/"
 cp "${INSTALL_DIR}/usr/bin/winafi" "${APPDIR}/usr/bin/"
+cp "${PROJECT_ROOT}/packaging/winafi.svg" "${APPDIR}/usr/share/icons/hicolor/scalable/apps/winafi.svg"
 
 # Copy libraries if needed (linuxdeploy will handle this)
 if [ -d "${INSTALL_DIR}/usr/lib" ]; then
@@ -80,7 +82,10 @@ else
 fi
 
 # Use linuxdeploy to bundle dependencies
-"${LINUXDEPLOY}" --appdir="${APPDIR}" --output=appimage --plugin=qt
+"${LINUXDEPLOY}" --appdir="${APPDIR}" \
+    --desktop-file="${APPDIR}/usr/share/applications/winafi.desktop" \
+    --icon-file="${APPDIR}/usr/share/icons/hicolor/scalable/apps/winafi.svg" \
+    --output=appimage --plugin=qt
 
 # The AppImage is created in the current directory (BUILD_DIR)
 # Move it to project root and list it
