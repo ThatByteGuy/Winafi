@@ -58,7 +58,7 @@ ctest --output-on-failure
 ### Using the GUI
 
 ```bash
-./src/winafi-gui
+ sudo ./src/winafi-gui
 ```
 
 The GUI shows drive properties, formatting options and ISO details. It has a dark mode toggle and supports 7 languages (English, French, German, Spanish, Italian, Japanese and Simplified Chinese).
@@ -77,7 +77,7 @@ sudo ./src/winafi
 
 Automated mode (all options provided):
 ```bash
-sudo ./src/winafi --iso Windows11.iso --device /dev/sdb --dangerous --verbose
+sudo ./src/winafi --iso {Windows11.iso --device /dev/{Your USB drive} --dangerous --verbose
 ```
 
 ## Features
@@ -179,7 +179,7 @@ cmake -DCMAKE_BUILD_TYPE=Release      # Release or Debug
 Make sure the USB device is connected and not mounted:
 ```bash
 lsblk
-sudo umount /dev/sdb*
+sudo umount /dev/{Your USB drive}
 ```
 
 ### Permission denied errors
@@ -211,7 +211,7 @@ To contribute, ensure all tests pass and include test coverage for new features.
 
 ## Repository Description
 
-Winafi is a full-featured Linux utility for creating bootable USB drives from ISO files. It provides both CLI and Qt5 GUI interfaces with advanced features like settings persistence, network downloads, S.M.A.R.T. monitoring, Secure Boot validation and auto-updates. The project includes 30+ unit tests, proper error handling with 56 error codes, dark mode support and 7 language localization. Built with native Linux libraries (libudev, libparted, libarchive, libcurl) and designed for security, reliability and user experience.
+Winafi is a full-featured Linux utility for creating bootable USB drives from ISO files. It provides both CLI and Qt5 GUI interfaces with advanced features like settings persistence, network downloads(upcoming), S.M.A.R.T. monitoring, Secure Boot validation and auto-updates(upcoming). The project includes 30+ unit tests, proper error handling with 56 error codes, dark mode support and 7 language localization. Built with native Linux libraries (libudev, libparted, libarchive, libcurl) and designed for security, reliability and user experience.
 
 ## Performance
 
