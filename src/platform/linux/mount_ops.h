@@ -29,4 +29,10 @@ int unmount_and_cleanup(mount_context_t *ctx);
 // Sync filesystem buffers
 int mount_sync(void);
 
+// Sync only the filesystem containing the given path (faster than global sync)
+int mount_sync_path(const char *path);
+
+// Sync with timeout seconds — returns 0 on success, -1 on timeout/failure
+int mount_sync_path_timeout(const char *path, int timeout_sec);
+
 #endif

@@ -203,6 +203,13 @@ const char *winafi_get_error_code(winafi_session_t *session);
 const char *winafi_get_error_message(winafi_session_t *session);
 
 /**
+ * Request cancellation of a running write operation.
+ * Sets a flag checked by the extraction loop; the operation aborts
+ * at the next safe point and cleans up.
+ */
+void winafi_session_cancel(winafi_session_t *session);
+
+/**
  * Set progress callback
  *
  * Registers a callback to receive progress updates during operation.

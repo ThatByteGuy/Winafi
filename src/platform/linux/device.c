@@ -10,6 +10,8 @@
 #include <inttypes.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
+#include <dirent.h>
+#include <linux/limits.h>
 
 #define WINAFI_DEVICE_ERROR_INIT -1
 #define WINAFI_DEVICE_ERROR_ENUM -2
@@ -20,12 +22,6 @@ typedef struct winafi_device_context {
     struct udev *udev;
 } winafi_device_context_t;
 
-/**
- * device_init - Initialize device context
- * Creates and returns a libudev context for device operations.
- *
- * Return: Allocated context on success, NULL on error
- */
 winafi_device_context_t *device_init(void) {
     winafi_device_context_t *ctx = malloc(sizeof(*ctx));
     if (!ctx) {
@@ -43,12 +39,6 @@ winafi_device_context_t *device_init(void) {
     return ctx;
 }
 
-/**
- * device_cleanup - Cleanup device context
- * Frees the libudev context and allocated memory.
- *
- * @ctx: Device context to cleanup
- */
 void device_cleanup(winafi_device_context_t *ctx) {
     if (!ctx) return;
     if (ctx->udev) {
@@ -58,16 +48,6 @@ void device_cleanup(winafi_device_context_t *ctx) {
     free(ctx);
 }
 
-/**
- * device_get_property - Helper to get device property
- * Safely retrieves a property from a udev device.
- *
- * @dev: udev device
- * @name: property name
- * @default_val: default value if property not found
- *
- * Return: Property value or default
- */
 static const char *device_get_property(struct udev_device *dev,
                                        const char *name,
                                        const char *default_val) {
@@ -75,38 +55,17 @@ static const char *device_get_property(struct udev_device *dev,
     return val ? val : default_val;
 }
 
-/**
- * device_is_usb_device - Check if device is USB device
- * Checks for USB properties (ID_USB_VENDOR) which indicates USB device.
- * Handles both direct USB devices and USB storage devices (via usb-storage driver).
- *
- * @dev: udev device
- *
- * Return: 1 if USB device, 0 otherwise
- */
 static int device_is_usb_device(struct udev_device *dev) {
-    // Check for USB properties directly (works for usb-storage devices)
     const char *usb_vendor = udev_device_get_property_value(dev, "ID_USB_VENDOR");
     if (usb_vendor) {
         return 1;
     }
-
-    // Fallback: check for USB subsystem parent (original method, less reliable)
     struct udev_device *parent = udev_device_get_parent_with_subsystem_devtype(
         dev, "usb", "usb_device");
     return (parent != NULL) ? 1 : 0;
 }
 
-/**
- * device_get_capacity - Get device capacity in bytes
- * Reads capacity from sysfs and converts sectors to bytes.
- *
- * @dev: udev device
- *
- * Return: Capacity in bytes, 0 if unable to determine
- */
 static uint64_t device_get_capacity(struct udev_device *dev) {
-    // Use sysname (device name like "sdc") instead of sysnum (which may be NULL)
     const char *sysname = udev_device_get_sysname(dev);
     if (!sysname) return 0;
 
@@ -124,78 +83,143 @@ static uint64_t device_get_capacity(struct udev_device *dev) {
     }
     fclose(fp);
 
-    // Convert 512-byte sectors to bytes
     return sectors * 512;
 }
 
-/**
- * device_is_mounted - Check if device is currently mounted
- * Parses /proc/mounts to check if device is mounted.
- *
- * @devnode: Device node path (e.g., /dev/sdb1)
- *
- * Return: 1 if mounted, 0 otherwise
- */
-static int device_is_mounted(const char *devnode) {
+int device_is_mounted(const char *devnode) {
     if (!devnode) return 0;
 
     FILE *fp = fopen("/proc/mounts", "r");
     if (!fp) return 0;
 
-    char line[256];
+    char line[4096];
+    size_t n = strlen(devnode);
+    int ret = 0;
     while (fgets(line, sizeof(line), fp)) {
-        if (strncmp(line, devnode, strlen(devnode)) == 0) {
-            fclose(fp);
-            return 1;
+        if (strncmp(line, devnode, n) == 0 &&
+            (line[n] == ' ' || line[n] == '\t' || line[n] == '\0')) {
+            ret = 1;
+            break;
         }
     }
     fclose(fp);
-    return 0;
+    return ret;
 }
 
-/**
- * device_is_system_disk - Check if device appears to be system disk
- * Filters out /dev/sda and other likely system disks.
- *
- * @devnode: Device node path
- *
- * Return: 1 if system disk, 0 otherwise
- */
-static int device_is_system_disk(const char *devnode) {
-    if (!devnode) return 0;
+static int device_find_mount_point(const char *devnode, char *out, size_t out_size) {
+    if (!devnode || !out || out_size == 0) return -1;
 
-    // Heuristic: filter out /dev/sda (typically system disk)
-    // This is not foolproof but matches Winafi behavior
-    if (strcmp(devnode, "/dev/sda") == 0) {
-        return 1;
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) return -1;
+
+    char line[4096];
+    size_t n = strlen(devnode);
+    int found = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, devnode, n) == 0 &&
+            (line[n] == ' ' || line[n] == '\t' || line[n] == '\0')) {
+            char mnt_dev[256], mnt_point[256], mnt_type[64], mnt_opts[256];
+            int dummy1, dummy2;
+            if (sscanf(line, "%255s %255s %63s %255s %d %d",
+                       mnt_dev, mnt_point, mnt_type, mnt_opts, &dummy1, &dummy2) >= 2) {
+                strncpy(out, mnt_point, out_size - 1);
+                out[out_size - 1] = '\0';
+                found = 1;
+            }
+            break;
+        }
     }
-
-    return 0;
+    fclose(fp);
+    return found ? 0 : -1;
 }
 
-/**
- * device_should_skip - Filter virtual/system block devices from enumeration
- */
+static int device_is_whole_disk_mounted(const char *sysname) {
+    DIR *dp;
+    struct dirent *de;
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "/sys/block/%s", sysname);
+    dp = opendir(path);
+    if (!dp) return 0;
+
+    int mounted = 0;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+
+        char part_attr[PATH_MAX];
+        if (snprintf(part_attr, sizeof(part_attr), "%s/%s/partition", path, de->d_name) < 0 ||
+            strlen(path) + 1 + strlen(de->d_name) + strlen("/partition") >= sizeof(part_attr)) {
+            continue;
+        }
+        if (access(part_attr, F_OK) != 0) continue;
+
+        char part_dev[PATH_MAX];
+        if (snprintf(part_dev, sizeof(part_dev), "/dev/%s", de->d_name) < 0 ||
+            strlen("/dev/") + strlen(de->d_name) >= sizeof(part_dev)) {
+            continue;
+        }
+
+        if (device_is_mounted(part_dev)) {
+            mounted = 1;
+            break;
+        }
+    }
+    closedir(dp);
+    return mounted;
+}
+
+static int device_find_first_mount_point(const char *sysname, char *out, size_t out_size) {
+    DIR *dp;
+    struct dirent *de;
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "/sys/block/%s", sysname);
+    dp = opendir(path);
+    if (!dp) return -1;
+
+    int found = 0;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+
+        char part_attr[PATH_MAX];
+        if (snprintf(part_attr, sizeof(part_attr), "%s/%s/partition", path, de->d_name) < 0 ||
+            strlen(path) + 1 + strlen(de->d_name) + strlen("/partition") >= sizeof(part_attr)) {
+            continue;
+        }
+        if (access(part_attr, F_OK) != 0) continue;
+
+        char part_dev[PATH_MAX];
+        if (snprintf(part_dev, sizeof(part_dev), "/dev/%s", de->d_name) < 0 ||
+            strlen("/dev/") + strlen(de->d_name) >= sizeof(part_dev)) {
+            continue;
+        }
+
+        if (device_find_mount_point(part_dev, out, out_size) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    closedir(dp);
+    return found ? 0 : -1;
+}
+
 static int device_should_skip(struct udev_device *dev) {
     const char *dn = udev_device_get_devnode(dev);
-    if (!dn) {
-        return 1;
-    }
-    if (strncmp(dn, "/dev/loop", 9) == 0) {
-        return 1;
-    }
-    if (strncmp(dn, "/dev/ram", 8) == 0) {
-        return 1;
-    }
-    if (strncmp(dn, "/dev/dm-", 8) == 0) {
-        return 1;
-    }
+    if (!dn) return 1;
+    if (strncmp(dn, "/dev/loop", 9) == 0) return 1;
+    if (strncmp(dn, "/dev/ram", 8) == 0) return 1;
+    if (strncmp(dn, "/dev/dm-", 8) == 0) return 1;
+    if (strncmp(dn, "/dev/zram", 9) == 0) return 1;
+    if (strncmp(dn, "/dev/nbd", 8) == 0) return 1;
     return 0;
 }
 
 /**
- * device_enumerate - Enumerate removable block devices
- * Finds block disks (not partitions) with valid capacity, excluding loop/ram/dm.
+ * device_enumerate - Enumerate all disk-type block devices
+ *
+ * Returns ALL whole-disk block devices (not partitions, not virtual)
+ * with correct is_removable, is_mounted, and mount_point fields.
+ * The caller (GUI) filters by is_removable + user preference.
  *
  * @ctx: Device context
  * @devices: Output pointer to device array (caller must free)
@@ -217,10 +241,7 @@ int device_enumerate(winafi_device_context_t *ctx,
         return WINAFI_DEVICE_ERROR_ENUM;
     }
 
-    // Filter for block devices
     udev_enumerate_add_match_subsystem(enumerate, "block");
-
-    // Filter for disks (not partitions)
     udev_enumerate_add_nomatch_sysattr(enumerate, "partition", NULL);
 
     if (udev_enumerate_scan_devices(enumerate) < 0) {
@@ -229,7 +250,6 @@ int device_enumerate(winafi_device_context_t *ctx,
         return WINAFI_DEVICE_ERROR_ENUM;
     }
 
-    // First pass: count eligible block devices
     int count = 0;
     struct udev_list_entry *devices_list = udev_enumerate_get_list_entry(enumerate);
     struct udev_list_entry *entry = NULL;
@@ -245,8 +265,7 @@ int device_enumerate(winafi_device_context_t *ctx,
 
         const char *devnode = udev_device_get_devnode(dev);
         uint64_t capacity = device_get_capacity(dev);
-        if (capacity > 0 && devnode &&
-            (device_is_usb_device(dev) || validate_device_is_removable(devnode) == VALIDATE_OK)) {
+        if (capacity > 0 && devnode) {
             count++;
         }
         udev_device_unref(dev);
@@ -259,7 +278,6 @@ int device_enumerate(winafi_device_context_t *ctx,
         return 0;
     }
 
-    // Allocate device array
     *devices = malloc((size_t)count * sizeof(**devices));
     if (!*devices) {
         fprintf(stderr, "Failed to allocate device array\n");
@@ -267,7 +285,6 @@ int device_enumerate(winafi_device_context_t *ctx,
         return WINAFI_DEVICE_ERROR_MEMORY;
     }
 
-    // Second pass: fill device array
     int idx = 0;
     devices_list = udev_enumerate_get_list_entry(enumerate);
     udev_list_entry_foreach(entry, devices_list) {
@@ -284,13 +301,11 @@ int device_enumerate(winafi_device_context_t *ctx,
 
         uint64_t capacity = device_get_capacity(dev);
         const char *devnode = udev_device_get_devnode(dev);
-        if (capacity == 0 || !devnode ||
-            (!device_is_usb_device(dev) && validate_device_is_removable(devnode) != VALIDATE_OK)) {
+        if (capacity == 0 || !devnode) {
             udev_device_unref(dev);
             continue;
         }
 
-        // Fill device info
         winafi_device_t *devinfo = &(*devices)[idx];
         memset(devinfo, 0, sizeof(*devinfo));
 
@@ -306,7 +321,6 @@ int device_enumerate(winafi_device_context_t *ctx,
 
         devinfo->capacity_bytes = capacity;
 
-        // Get vendor, model, serial
         const char *vendor = device_get_property(dev, "ID_VENDOR", "Unknown");
         const char *model = device_get_property(dev, "ID_MODEL", "Unknown");
         const char *serial = device_get_property(dev, "ID_SERIAL_SHORT", "Unknown");
@@ -315,7 +329,21 @@ int device_enumerate(winafi_device_context_t *ctx,
         strncpy(devinfo->model, model, sizeof(devinfo->model) - 1);
         strncpy(devinfo->serial, serial, sizeof(devinfo->serial) - 1);
 
-        devinfo->is_removable = device_is_usb_device(dev);
+        int removable = 0;
+        if (device_is_usb_device(dev)) {
+            removable = 1;
+        } else if (validate_device_is_removable(devnode) == VALIDATE_OK) {
+            removable = 1;
+        }
+        devinfo->is_removable = removable;
+
+        if (sysname) {
+            devinfo->is_mounted = device_is_whole_disk_mounted(sysname);
+            if (devinfo->is_mounted) {
+                device_find_first_mount_point(sysname, devinfo->mount_point,
+                                              sizeof(devinfo->mount_point));
+            }
+        }
 
         idx++;
         udev_device_unref(dev);
@@ -326,26 +354,10 @@ int device_enumerate(winafi_device_context_t *ctx,
     return 0;
 }
 
-/**
- * device_free_list - Free device enumeration result
- * Deallocates the device array from device_enumerate.
- *
- * @devices: Device array to free
- */
 void device_free_list(winafi_device_t *devices) {
     free(devices);
 }
 
-/**
- * device_get_info - Get info for single device
- * Retrieves detailed information about a specific device.
- *
- * @ctx: Device context
- * @devnode: Device node path (e.g., /dev/sdb)
- * @out_device: Output device info struct
- *
- * Return: 0 on success, negative on error
- */
 int device_get_info(winafi_device_context_t *ctx,
                    const char *devnode,
                    winafi_device_t *out_device) {
@@ -354,7 +366,6 @@ int device_get_info(winafi_device_context_t *ctx,
         return WINAFI_DEVICE_ERROR_INVALID;
     }
 
-    // Get device stat to extract major:minor device numbers
     struct stat st;
     if (stat(devnode, &st) != 0) {
         fprintf(stderr, "Failed to stat device %s\n", devnode);
@@ -366,7 +377,6 @@ int device_get_info(winafi_device_context_t *ctx,
         return WINAFI_DEVICE_ERROR_INVALID;
     }
 
-    // Use proper udev device lookup from actual device number instead of hardcoded makedev
     struct udev_device *dev = udev_device_new_from_devnum(ctx->udev, 'b', st.st_rdev);
     if (!dev) {
         fprintf(stderr, "Failed to get device info for %s\n", devnode);
@@ -376,7 +386,6 @@ int device_get_info(winafi_device_context_t *ctx,
     memset(out_device, 0, sizeof(*out_device));
     strncpy(out_device->devnode, devnode, sizeof(out_device->devnode) - 1);
 
-    // Get sysname from device
     const char *sysname = udev_device_get_sysname(dev);
     if (sysname) {
         strncpy(out_device->sysname, sysname, sizeof(out_device->sysname) - 1);
@@ -392,51 +401,46 @@ int device_get_info(winafi_device_context_t *ctx,
     strncpy(out_device->vendor, vendor, sizeof(out_device->vendor) - 1);
     strncpy(out_device->model, model, sizeof(out_device->model) - 1);
     strncpy(out_device->serial, serial, sizeof(out_device->serial) - 1);
-    out_device->is_removable =
-        (device_is_usb_device(dev) || validate_device_is_removable(devnode) == VALIDATE_OK) ? 1 : 0;
+
+    int removable = 0;
+    if (device_is_usb_device(dev)) {
+        removable = 1;
+    } else if (validate_device_is_removable(devnode) == VALIDATE_OK) {
+        removable = 1;
+    }
+    out_device->is_removable = removable;
+
+    if (sysname) {
+        out_device->is_mounted = device_is_whole_disk_mounted(sysname);
+        if (out_device->is_mounted) {
+            device_find_first_mount_point(sysname, out_device->mount_point,
+                                          sizeof(out_device->mount_point));
+        }
+    }
 
     udev_device_unref(dev);
     return 0;
 }
 
 /**
- * device_validate - Validate device for use
- * Checks if device is suitable for Winafi operations.
+ * device_validate - Safety-check a device for destructive operations
+ *
+ * Checks:
+ *  - Device exists and is a block device
+ *  - Device is NOT the system disk (contains root/boot/etc.)
+ *  - Device is not locked by another process
+ *
+ * NOTE: Removable and mounted checks are removed from here.
+ * Removable filtering is done in the GUI layer.
+ * Mounted checks are done in session_execute() as a final safety net.
  *
  * @devnode: Device node path
  *
- * Return: 0 if valid, negative if invalid
+ * Return: 0 if valid/usable, negative if invalid/unsafe
  */
 int device_validate(const char *devnode) {
     if (!devnode) {
         fprintf(stderr, "Invalid device node\n");
-        return WINAFI_DEVICE_ERROR_INVALID;
-    }
-
-    if (validate_device_is_removable(devnode) != VALIDATE_OK) {
-        fprintf(stderr, "Device %s is not removable/USB\n", devnode);
-        return WINAFI_DEVICE_ERROR_INVALID;
-    }
-
-    // Check if device is mounted
-    if (device_is_mounted(devnode)) {
-        fprintf(stderr, "Device %s is mounted\n", devnode);
-        return WINAFI_DEVICE_ERROR_INVALID;
-    }
-
-    // Check if system disk
-    if (device_is_system_disk(devnode)) {
-        fprintf(stderr, "Device %s appears to be system disk\n", devnode);
-        return WINAFI_DEVICE_ERROR_INVALID;
-    }
-
-    if (validate_not_system_drive(devnode) == VALIDATE_ERR_SYSTEM_DRIVE) {
-        fprintf(stderr, "Device %s contains a protected system mount\n", devnode);
-        return WINAFI_DEVICE_ERROR_INVALID;
-    }
-
-    if (geteuid() == 0 && validate_device_not_locked(devnode) != VALIDATE_OK) {
-        fprintf(stderr, "Device %s is locked or busy\n", devnode);
         return WINAFI_DEVICE_ERROR_INVALID;
     }
 
@@ -450,6 +454,18 @@ int device_validate(const char *devnode) {
     // Verify it's a block device
     if (!S_ISBLK(st.st_mode)) {
         fprintf(stderr, "%s is not a block device\n", devnode);
+        return WINAFI_DEVICE_ERROR_INVALID;
+    }
+
+    // Check if system disk (contains root, /boot, /home, /var, or /usr)
+    if (validate_not_system_drive(devnode) == VALIDATE_ERR_SYSTEM_DRIVE) {
+        fprintf(stderr, "Device %s contains a protected system mount\n", devnode);
+        return WINAFI_DEVICE_ERROR_INVALID;
+    }
+
+    // Check if locked (only when root, since non-root can't lock anyway)
+    if (geteuid() == 0 && validate_device_not_locked(devnode) != VALIDATE_OK) {
+        fprintf(stderr, "Device %s is locked or busy\n", devnode);
         return WINAFI_DEVICE_ERROR_INVALID;
     }
 

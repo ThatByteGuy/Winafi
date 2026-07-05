@@ -73,11 +73,87 @@ static int mount_entry_matches_dev(const char *mnt_fsname, dev_t dev)
 
 static int is_protected_mountpoint(const char *mountpoint)
 {
-    const char *protected_mounts[] = { "/", "/boot", "/home", "/var", "/usr" };
+    const char *protected_mounts[] = {
+        "/", "/boot", "/boot/efi", "/efi",
+        "/home", "/var", "/usr"
+    };
     for (size_t i = 0; i < sizeof(protected_mounts) / sizeof(protected_mounts[0]); i++) {
         if (strcmp(mountpoint, protected_mounts[i]) == 0) return 1;
     }
     return 0;
+}
+
+static int child_partition_has_swap(const char *sysname)
+{
+    // Collect all partition devnums for this parent disk
+    dev_t devs[128];
+    int dev_count = 0;
+
+    char block_dir[PATH_MAX];
+    snprintf(block_dir, sizeof(block_dir), "/sys/block/%s", sysname);
+
+    DIR *dp = opendir(block_dir);
+    if (!dp) return 0;
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL && dev_count < 128) {
+        if (de->d_name[0] == '.') continue;
+        char part_attr[PATH_MAX];
+        if (snprintf(part_attr, sizeof(part_attr), "%s/%s/partition",
+                     block_dir, de->d_name) < 0 ||
+            strlen(block_dir) + 1 + strlen(de->d_name) + strlen("/partition") >= sizeof(part_attr)) {
+            continue;
+        }
+        if (access(part_attr, F_OK) != 0) continue;
+        char part_dev[PATH_MAX];
+        if (snprintf(part_dev, sizeof(part_dev), "/dev/%s", de->d_name) < 0 ||
+            strlen("/dev/") + strlen(de->d_name) >= sizeof(part_dev)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(part_dev, &st) == 0 && S_ISBLK(st.st_mode)) {
+            devs[dev_count++] = st.st_rdev;
+        }
+    }
+    closedir(dp);
+
+    // Also add the parent device itself (swap can be on a whole disk)
+    {
+        char parent_dev[PATH_MAX];
+        snprintf(parent_dev, sizeof(parent_dev), "/dev/%s", sysname);
+        struct stat st;
+        if (stat(parent_dev, &st) == 0 && S_ISBLK(st.st_mode)) {
+            devs[dev_count++] = st.st_rdev;
+        }
+    }
+
+    // Check /proc/swaps for matching devices
+    FILE *fp = fopen("/proc/swaps", "r");
+    if (!fp) return 0;
+
+    char line[4096];
+    // Skip header line
+    if (!fgets(line, sizeof(line), fp)) {
+        fclose(fp);
+        return 0;
+    }
+
+    int found = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        char filename[256];
+        if (sscanf(line, "%255s", filename) != 1) continue;
+        struct stat st;
+        if (stat(filename, &st) != 0 || !S_ISBLK(st.st_mode)) continue;
+        for (int i = 0; i < dev_count; i++) {
+            if (st.st_rdev == devs[i]) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) break;
+    }
+    fclose(fp);
+    return found;
 }
 
 static int child_partition_mounted_at_protected(const char *devnode)
@@ -156,9 +232,14 @@ static int child_partition_mounted_at_protected(const char *devnode)
  *    - Always available in Linux systems
  *    - More reliable in restricted environments
  *
- * 3. Protected mount points (critical system partitions):
+ * 3. /proc/swaps: Active swap partitions
+ *    - Parsed to detect swap-on-block-device
+ *
+ * 4. Protected mount points (critical system partitions):
  *    - / (root partition)
  *    - /boot (bootloader and kernel)
+ *    - /boot/efi (EFI system partition — UEFI firmware boot path)
+ *    - /efi (alternative EFI system partition mount)
  *    - /home (user home directories)
  *    - /var (system variable data)
  *    - /usr (user programs and libraries)
@@ -193,19 +274,23 @@ int validate_device_capacity(uint64_t device_bytes, uint64_t iso_bytes)
  * validate_not_system_drive - Check if device is a system drive
  * @devnode: Device path (e.g. "/dev/sda1")
  *
- * Checks if device is mounted at protected system locations:
+ * Checks if device or its partitions are mounted at protected system
+ * locations or used as active swap:
  * - / (root)
  * - /boot (boot partition)
+ * - /boot/efi (EFI system partition)
+ * - /efi (alternative EFI system partition mount)
  * - /home (home partition)
  * - /var (system variable data)
  * - /usr (user programs and libraries)
+ * - swap (any partition active as swap)
  *
  * Uses dual fallback strategy:
  * 1. Primary: /etc/mtab (current mount table)
  * 2. Fallback: /proc/mounts (kernel mount table)
  *
  * Returns VALIDATE_OK if device is not a system drive,
- * VALIDATE_ERR_SYSTEM_DRIVE if mounted at protected location,
+ * VALIDATE_ERR_SYSTEM_DRIVE if mounted at protected location or in swap,
  * VALIDATE_ERR_NOT_FOUND if device not found in mount tables.
  */
 int validate_not_system_drive(const char *devnode)
@@ -214,20 +299,33 @@ int validate_not_system_drive(const char *devnode)
         return VALIDATE_ERR_NOT_FOUND;
     }
 
+    // Check child partitions for protected mounts
     int child_check = child_partition_mounted_at_protected(devnode);
     if (child_check == VALIDATE_ERR_SYSTEM_DRIVE) {
         return child_check;
     }
 
+    // Check if any partition of this device is active swap
+    {
+        char sysname[64];
+        if (devnode_to_sysname(devnode, sysname, sizeof(sysname)) == 0) {
+            if (child_partition_has_swap(sysname)) {
+                return VALIDATE_ERR_SYSTEM_DRIVE;
+            }
+        }
+    }
+
     // Protected mountpoints that should never be formatted
     const char *protected_mounts[] = {
-        "/",      // root partition
-        "/boot",  // boot partition
-        "/home",  // home partition
-        "/var",   // system variable data
-        "/usr"    // user programs and libraries
+        "/",           // root partition
+        "/boot",       // boot partition
+        "/boot/efi",   // EFI system partition (UEFI)
+        "/efi",        // alternative EFI system partition mount
+        "/home",       // user home directories
+        "/var",        // system variable data
+        "/usr"         // user programs and libraries
     };
-    const int num_protected = 5;
+    const int num_protected = 7;
 
     // Method 1: Check /etc/mtab (primary method)
     FILE *fp = fopen("/etc/mtab", "r");
@@ -274,7 +372,7 @@ int validate_not_system_drive(const char *devnode)
         fclose(proc_mounts);
     }
 
-    // Device not found in either mtab or /proc/mounts (not currently mounted)
+    // Device not found in either mount table or swap (not currently active)
     return VALIDATE_ERR_NOT_FOUND;
 }
 
@@ -327,4 +425,133 @@ int validate_device_is_removable(const char *devnode)
         return VALIDATE_OK;
     }
     return VALIDATE_ERR_SYSTEM_DRIVE;
+}
+
+/**
+ * final_wipe_guard - Last-mile safety check before any destructive write
+ * @devnode: Device path (e.g. "/dev/sdb")
+ *
+ * This is a self-contained guard that does NOT rely on prior validation
+ * layers. It must be called by every function that performs a destructive
+ * write (partition wipe, format, etc.) immediately before the write.
+ *
+ * Checks:
+ *  1. Virtual/unsupported device types: loop, ram, dm, zram, nbd, mapper
+ *  2. Device exists and is a block device
+ *  3. Device is mounted (exact-match, no prefix collision)
+ *  4. Any partition of this device is mounted
+ *  5. Any partition is active swap
+ *  6. Device or any partition is mounted at a protected system mount point
+ *     (/, /boot, /boot/efi, /efi, /home, /var, /usr)
+ *
+ * Returns VALIDATE_OK if safe to write, VALIDATE_ERR_* if blocked.
+ */
+int final_wipe_guard(const char *devnode)
+{
+    if (!devnode) {
+        return VALIDATE_ERR_NOT_FOUND;
+    }
+
+    // 1. Block virtual/unsupported device types
+    if (strncmp(devnode, "/dev/loop", 9) == 0 ||
+        strncmp(devnode, "/dev/ram", 8) == 0 ||
+        strncmp(devnode, "/dev/dm-", 8) == 0 ||
+        strncmp(devnode, "/dev/zram", 9) == 0 ||
+        strncmp(devnode, "/dev/nbd", 8) == 0) {
+        return VALIDATE_ERR_SYSTEM_DRIVE;
+    }
+    // Block device-mapper paths
+    if (strncmp(devnode, "/dev/mapper/", 12) == 0) {
+        return VALIDATE_ERR_SYSTEM_DRIVE;
+    }
+
+    // 2. Device must exist and be a block device
+    struct stat dev_st;
+    if (stat(devnode, &dev_st) != 0 || !S_ISBLK(dev_st.st_mode)) {
+        return VALIDATE_ERR_NOT_FOUND;
+    }
+
+    // 3. Check if device itself is mounted (exact match only)
+    {
+        FILE *fp = fopen("/proc/mounts", "r");
+        if (fp) {
+            char line[4096];
+            size_t n = strlen(devnode);
+            while (fgets(line, sizeof(line), fp)) {
+                if (strncmp(line, devnode, n) == 0 &&
+                    (line[n] == ' ' || line[n] == '\t' || line[n] == '\n')) {
+                    fclose(fp);
+                    return VALIDATE_ERR_DEVICE_LOCKED;
+                }
+            }
+            fclose(fp);
+        }
+    }
+
+    // 4-6: Check partitions of this device
+    char sysname[64];
+    if (devnode_to_sysname(devnode, sysname, sizeof(sysname)) != 0) {
+        // Cannot resolve sysname; device may have disappeared
+        return VALIDATE_ERR_NOT_FOUND;
+    }
+
+    {
+        char block_dir[PATH_MAX];
+        struct dirent *de;
+        DIR *dp;
+
+        snprintf(block_dir, sizeof(block_dir), "/sys/block/%s", sysname);
+        dp = opendir(block_dir);
+        if (dp) {
+            while ((de = readdir(dp)) != NULL) {
+                if (de->d_name[0] == '.') continue;
+
+                char part_attr[PATH_MAX];
+                if (snprintf(part_attr, sizeof(part_attr), "%s/%s/partition",
+                             block_dir, de->d_name) < 0 ||
+                    strlen(block_dir) + 1 + strlen(de->d_name) + strlen("/partition")
+                        >= sizeof(part_attr)) {
+                    continue;
+                }
+                if (access(part_attr, F_OK) != 0) continue;
+
+                char part_dev[PATH_MAX];
+                if (snprintf(part_dev, sizeof(part_dev), "/dev/%s", de->d_name) < 0 ||
+                    strlen("/dev/") + strlen(de->d_name) >= sizeof(part_dev)) {
+                    continue;
+                }
+
+                // 4. Check if partition is mounted
+                {
+                    FILE *fp = fopen("/proc/mounts", "r");
+                    if (fp) {
+                        char line[4096];
+                        size_t pn = strlen(part_dev);
+                        while (fgets(line, sizeof(line), fp)) {
+                            if (strncmp(line, part_dev, pn) == 0 &&
+                                (line[pn] == ' ' || line[pn] == '\t' || line[pn] == '\n')) {
+                                fclose(fp);
+                                closedir(dp);
+                                return VALIDATE_ERR_DEVICE_LOCKED;
+                            }
+                        }
+                        fclose(fp);
+                    }
+                }
+            }
+            closedir(dp);
+        }
+
+        // 5. Check swap
+        if (child_partition_has_swap(sysname)) {
+            return VALIDATE_ERR_SYSTEM_DRIVE;
+        }
+    }
+
+    // 6. Check system drive (root, /boot, /boot/efi, /efi, /home, /var, /usr)
+    if (validate_not_system_drive(devnode) == VALIDATE_ERR_SYSTEM_DRIVE) {
+        return VALIDATE_ERR_SYSTEM_DRIVE;
+    }
+
+    return VALIDATE_OK;
 }

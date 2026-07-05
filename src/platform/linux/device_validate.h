@@ -31,15 +31,23 @@ int validate_device_capacity(uint64_t device_bytes, uint64_t iso_bytes);
  * validate_not_system_drive - Check if device is a system drive
  * @devnode: Device path (e.g. "/dev/sda1")
  *
- * Detects if device is mounted at protected mountpoints using dual fallback:
+ * Detects if device or its partitions are mounted at protected mountpoints
+ * or used as active swap. Also detects child partitions mounted at protected
+ * locations (parent-disk protection).
+ *
+ * Protected mountpoints:
  * - / (root)
  * - /boot (boot partition)
+ * - /boot/efi (EFI system partition)
+ * - /efi (alternative EFI system partition mount)
  * - /home (home partition)
  * - /var (system variable data)
  * - /usr (user programs and libraries)
+ * - Any active swap partition on this device
  *
  * Primary source: /etc/mtab (current mount table)
  * Fallback source: /proc/mounts (kernel mount table)
+ * Swap source: /proc/swaps
  *
  * Prevents accidental formatting of system partitions.
  *
@@ -76,5 +84,24 @@ int validate_device_not_locked(const char *devnode);
  * VALIDATE_ERR_SYSTEM_DRIVE otherwise.
  */
 int validate_device_is_removable(const char *devnode);
+
+/**
+ * final_wipe_guard - Last-mile safety check before any destructive write.
+ * @devnode: Device path (e.g. "/dev/sdb")
+ *
+ * Self-contained guard that blocks writes to:
+ *  - Virtual devices: loop, ram, dm, zram, nbd, mapper
+ *  - Mounted devices (exact device match, no prefix collision)
+ *  - Parent disks of mounted partitions
+ *  - Swap devices
+ *  - System drives (containing /, /boot, /boot/efi, /efi, /home, /var, /usr)
+ *  - Non-existent or non-block devices
+ *
+ * This function does NOT depend on prior validation layers and must be
+ * called by every function that performs destructive writes.
+ *
+ * Returns VALIDATE_OK if safe to write, VALIDATE_ERR_* if blocked.
+ */
+int final_wipe_guard(const char *devnode);
 
 #endif // WINAFI_DEVICE_VALIDATE_H

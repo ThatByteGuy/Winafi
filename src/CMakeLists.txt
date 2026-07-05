@@ -94,10 +94,12 @@ if(Qt5_FOUND AND BUILD_GUI)
         gui/ISOHashWorkerThread.h
         gui/dark_mode.cpp
         gui/dark_mode.h
+        gui/UdevMonitor.cpp
+        gui/UdevMonitor.h
         gui/resources.qrc
     )
-    target_link_libraries(winafi_gui PUBLIC cli_logic winafi-core Qt5::Widgets Qt5::Concurrent)
-    target_include_directories(winafi_gui PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/gui)
+    target_link_libraries(winafi_gui PUBLIC cli_logic winafi-core Qt5::Widgets Qt5::Concurrent ${LIBUDEV_LIBRARIES})
+    target_include_directories(winafi_gui PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/gui ${LIBUDEV_INCLUDE_DIRS})
 
     # Qt5 GUI executable (optional)
     add_executable(winafi-gui

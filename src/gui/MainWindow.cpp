@@ -6,8 +6,10 @@
 #include "sections/WindowsCustomizeSection.h"
 #include "sections/AdvancedSection.h"
 #include "ISOHashDialog.h"
+#include "UdevMonitor.h"
 #include "platform/linux/settings.h"
 #include "platform/linux/wue.h"
+#include "platform/linux/device.h"
 #include <QApplication>
 #include <QWidget>
 #include <QHBoxLayout>
@@ -21,6 +23,7 @@
 #include <QElapsedTimer>
 #include <QMessageBox>
 #include <QFileInfo>
+#include <QCheckBox>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     settings_t *s = settings_open();
@@ -31,6 +34,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("Winafi");
     resize(760, 540);
     onRefreshDevices();
+    m_udevMonitor = std::make_unique<UdevMonitor>(this);
+    connect(m_udevMonitor.get(), &UdevMonitor::devicesChanged, this, &MainWindow::onRefreshDevices);
 }
 MainWindow::~MainWindow() = default;
 
@@ -89,10 +94,42 @@ void MainWindow::buildUi() {
     connect(m_source, &SourceSection::hashRequested, this, &MainWindow::onHashRequested);
     connect(m_source, &SourceSection::verifyRequested, this, &MainWindow::onVerifyRequested);
     connect(m_target, &TargetSection::refreshRequested, this, &MainWindow::onRefreshDevices);
+    connect(m_target, &TargetSection::showHardDrivesToggled, this, [this](){ onRefreshDevices(); });
+    connect(m_target, &TargetSection::deviceChanged, this, &MainWindow::updateDeviceInfo);
     connect(m_target, &TargetSection::deviceChanged, this, &MainWindow::updateSummary);
     connect(m_customize, &WindowsCustomizeSection::changed, this, &MainWindow::updateSummary);
     connect(m_advanced, &AdvancedSection::changed, this, &MainWindow::updateSummary);
     connect(m_startButton, &QPushButton::clicked, this, &MainWindow::onStart);
+}
+
+QString MainWindow::formatDeviceLabel(const DeviceInfo &info) const {
+    QString sizeStr = QString::number(static_cast<double>(info.capacityBytes) / (1024.0*1024.0*1024.0), 'f', 1) + " GB";
+    QString desc;
+    if (!info.vendor.isEmpty() && info.vendor != "Unknown") {
+        desc = info.vendor;
+        if (!info.model.isEmpty() && info.model != "Unknown") {
+            desc += " " + info.model;
+        }
+    } else if (!info.model.isEmpty() && info.model != "Unknown") {
+        desc = info.model;
+    } else {
+        desc = info.devnode.section('/', -1);
+    }
+
+    QString label;
+    if (!info.isRemovable) {
+        label = tr("[INTERNAL] %1 · %2").arg(desc, sizeStr);
+    } else {
+        label = tr("%1 · %2").arg(desc, sizeStr);
+    }
+
+    if (info.isMounted && !info.mountPoint.isEmpty()) {
+        label += tr(" · Mounted at %1").arg(info.mountPoint);
+    } else if (info.isMounted) {
+        label += tr(" · Mounted");
+    }
+
+    return label;
 }
 
 void MainWindow::setStatus(const QString &text, const QString &colorHex) {
@@ -114,18 +151,47 @@ void MainWindow::onRefreshDevices() {
     if (!session) return;
     winafi_device_t *devs = nullptr; int n = 0;
     m_target->clearDevices();
+    m_deviceInfo.clear();
     if (winafi_enumerate_devices(session, &devs, &n) == WINAFI_OK) {
         for (int i = 0; i < n; ++i) {
-            bool removable = devs[i].is_removable;
-            if (!removable && !m_target->showHardDrives()) continue;
-            QString label = QString("%1  (%2 GB)")
-                .arg(QString::fromUtf8(devs[i].devnode))
-                .arg(static_cast<double>(devs[i].capacity_bytes) / (1024.0*1024.0*1024.0), 0, 'f', 1);
-            m_target->addDevice(label, QString::fromUtf8(devs[i].devnode));
+            DeviceInfo info;
+            info.devnode = QString::fromUtf8(devs[i].devnode);
+            info.vendor = QString::fromUtf8(devs[i].vendor);
+            info.model = QString::fromUtf8(devs[i].model);
+            info.capacityBytes = devs[i].capacity_bytes;
+            info.isRemovable = devs[i].is_removable;
+            info.isMounted = devs[i].is_mounted;
+            info.mountPoint = QString::fromUtf8(devs[i].mount_point);
+
+            if (!info.isRemovable && !m_target->showHardDrives()) continue;
+
+            QString label = formatDeviceLabel(info);
+            m_target->addDevice(label, info.devnode);
+            m_deviceInfo[info.devnode] = info;
         }
     }
     winafi_session_destroy(session);
+    updateDeviceInfo();
     updateSummary();
+}
+
+void MainWindow::updateDeviceInfo() {
+    QString devnode = m_target->selectedDevnode();
+    if (devnode.isEmpty() || !m_deviceInfo.contains(devnode)) {
+        m_target->setInfo(QString());
+        return;
+    }
+    const DeviceInfo &info = m_deviceInfo[devnode];
+    QStringList parts;
+    if (info.isMounted && !info.mountPoint.isEmpty()) {
+        parts << tr("Mounted at %1").arg(info.mountPoint);
+    } else if (info.isMounted) {
+        parts << tr("Mounted");
+    }
+    if (!info.isRemovable) {
+        parts << tr("INTERNAL DRIVE — risk of data loss");
+    }
+    m_target->setInfo(parts.join(" · "));
 }
 
 void MainWindow::onIsoChosen(const QString &path) {
@@ -154,8 +220,6 @@ void MainWindow::onHashRequested() {
         QMessageBox::information(this, tr("No ISO"), tr("Select an ISO file first."));
         return;
     }
-    // ISOHashDialog needs a session with the ISO loaded; it owns nothing, so we
-    // keep the session alive for the dialog's modal lifetime then destroy it.
     winafi_session_t *session = winafi_session_create();
     if (session && winafi_session_load_iso(session, iso.toUtf8().constData()) == WINAFI_OK) {
         ISOHashDialog dlg(iso, session, this);
@@ -167,7 +231,6 @@ void MainWindow::onHashRequested() {
 }
 
 void MainWindow::onVerifyRequested() {
-    // "Verify" re-runs source detection (OS type + badge) on the current ISO.
     const QString iso = m_source->isoPath();
     if (iso.isEmpty()) {
         QMessageBox::information(this, tr("No ISO"), tr("Select an ISO file first."));
@@ -198,10 +261,45 @@ void MainWindow::updateSummary() {
 }
 
 void MainWindow::onStart() {
-    if (QMessageBox::warning(this, tr("Confirm"),
-            tr("This will ERASE %1. Continue?").arg(m_target->selectedDevnode()),
-            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+    QString devnode = m_target->selectedDevnode();
+
+    if (!m_deviceInfo.contains(devnode)) {
+        QMessageBox::warning(this, tr("Error"),
+            tr("Device info not found. Please refresh the device list."));
         return;
+    }
+
+    const DeviceInfo &info = m_deviceInfo[devnode];
+    QStringList warnings;
+
+    if (info.isMounted) {
+        QString msg = tr("This device is currently mounted");
+        if (!info.mountPoint.isEmpty()) {
+            msg += tr(" at %1").arg(info.mountPoint);
+        }
+        msg += tr(".\n\nWriting to a mounted device can cause filesystem corruption and data loss.");
+        warnings << msg;
+    }
+
+    if (!info.isRemovable) {
+        warnings << tr("This is an INTERNAL/System drive.\n\n"
+                       "Wiping the wrong internal drive can destroy your operating system, "
+                       "applications, and personal files.\n\n"
+                       "Only proceed if you are absolutely certain this is the correct target.");
+    }
+
+    QString fullMsg;
+    if (!warnings.isEmpty()) {
+        fullMsg = warnings.join("\n\n---\n\n");
+        fullMsg += "\n\n" + tr("This will ERASE everything on %1.").arg(devnode);
+    } else {
+        fullMsg = tr("This will ERASE %1. Continue?").arg(devnode);
+    }
+
+    QMessageBox::StandardButton btn = QMessageBox::warning(this, tr("Confirm"), fullMsg,
+        QMessageBox::Yes | QMessageBox::No);
+    if (btn != QMessageBox::Yes) return;
+
     setStatus(tr("Writing…"), "#4fc3f7");
     m_startButton->setEnabled(false);
     m_timer.reset(new QElapsedTimer()); m_timer->start();

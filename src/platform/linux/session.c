@@ -29,6 +29,7 @@
 struct winafi_session {
     // State tracking
     int current_state;
+    volatile int cancelled;   // Set to 1 to cancel running operation
     char error_code[16];      // "E-30-D" format
     char error_message[512];  // Full error message
 
@@ -453,6 +454,13 @@ int winafi_session_prepare(winafi_session_t *session) {
     return 0;
 }
 
+static int extract_progress_bridge(const iso_progress_info_t *info, void *user_data) {
+    struct { progress_context_t *prog; volatile int *cancel; } *ctx = user_data;
+    if (*ctx->cancel) return 1;
+    progress_fire(ctx->prog, info->percent, info->message ? info->message : "Extracting ISO files");
+    return 0;
+}
+
 /**
  * winafi_session_execute - Execute the write operation
  *
@@ -473,20 +481,24 @@ int winafi_session_execute(winafi_session_t *session) {
 
     session->current_state = WINAFI_SESSION_EXECUTING;
 
-    if (device_validate(session->selected_device) != 0 ||
-        validate_device_is_removable(session->selected_device) != VALIDATE_OK ||
-        validate_not_system_drive(session->selected_device) == VALIDATE_ERR_SYSTEM_DRIVE) {
+    // Final safety validation: not system drive, not locked
+    if (device_validate(session->selected_device) != 0) {
         log_error("Device failed final safety validation before wipe: %s", session->selected_device);
         session_set_error(session, "E-00-G", "Device failed final safety validation");
         goto error;
     }
 
-    // Step 1: Wipe device partition table (0%)
+    // Safety net: refuse to wipe a mounted device (filesystem corruption risk)
+    if (device_is_mounted(session->selected_device)) {
+        log_error("Device %s is mounted, refuse to wipe", session->selected_device);
+        session_set_error(session, "E-01-D", "Device is mounted — unmount first");
+        goto error;
+    }
+
+    // ── Step 1: Wipe + Create partitions (0‑100%) ──
     progress_fire(&session->progress_ctx, 0, "Wiping device");
     log_info("Step 1: Wiping device %s", session->selected_device);
-    // Device wipe happens as part of partition_wipe_and_create
 
-    // Step 2: Calculate partition layout and build partition device paths
     uint64_t total_sectors = 0;
     for (int i = 0; i < session->device_count; i++) {
         if (strcmp(session->devices[i].devnode, session->selected_device) == 0) {
@@ -512,8 +524,7 @@ int winafi_session_execute(winafi_session_t *session) {
 
     uint64_t boot_size_bytes = 100 * 1024 * 1024;  // 100MB FAT32 boot partition
 
-    // Step 3: Create partitions (10-30%)
-    progress_fire(&session->progress_ctx, 10, "Creating partitions");
+    // ── Step 1: Create partitions (continue to 100%) ──
     log_info("%s", "Step 2-4: Creating partition table and partitions");
 
     if (partition_wipe_and_create(session->selected_device, total_sectors, boot_size_bytes) != 0) {
@@ -529,9 +540,10 @@ int winafi_session_execute(winafi_session_t *session) {
         sleep(1);
     }
 
-    progress_fire(&session->progress_ctx, 30, "Formatting partitions");
+    progress_fire(&session->progress_ctx, 100, "Wiping device");
 
-    // Step 4: Format FAT32 (40%)
+    // ── Step 2: Format partitions (0‑100%) ──
+    progress_fire(&session->progress_ctx, 0, "Formatting partitions");
     log_info("Step 5: Formatting FAT32 boot partition %s", fat_device);
     if (fs_format_fat32(fat_device, "BOOT") != 0) {
         log_error("%s", "Failed to format FAT32");
@@ -539,9 +551,7 @@ int winafi_session_execute(winafi_session_t *session) {
         goto error;
     }
 
-    progress_fire(&session->progress_ctx, 40, "Formatting FAT32");
-
-    // Step 5: Format NTFS (50%)
+    progress_fire(&session->progress_ctx, 50, "Formatting partitions");
     log_info("Step 6: Formatting NTFS data partition %s", ntfs_device);
     if (fs_format_ntfs(ntfs_device, "WINDOWS") != 0) {
         log_error("%s", "Failed to format NTFS");
@@ -549,9 +559,9 @@ int winafi_session_execute(winafi_session_t *session) {
         goto error;
     }
 
-    progress_fire(&session->progress_ctx, 50, "Formatting NTFS");
+    progress_fire(&session->progress_ctx, 100, "Formatting partitions");
 
-    // Step 6: Create temporary mount directories (60%)
+    // ── Step 3: Mount + Extract ISO (0‑100%) ──
     log_info("%s", "Step 7: Creating temporary mount directories");
     if (mount_create_temp_dirs(&session->mount_ctx) != 0) {
         log_error("%s", "Failed to create temporary directories");
@@ -559,9 +569,7 @@ int winafi_session_execute(winafi_session_t *session) {
         goto error;
     }
 
-    progress_fire(&session->progress_ctx, 60, "Mounting partitions");
-
-    // Step 7: Mount FAT32 (65%)
+    progress_fire(&session->progress_ctx, 0, "Mounting partitions");
     log_info("Step 8: Mounting FAT32 partition %s", fat_device);
     if (mount_fat32(fat_device, session->mount_ctx.fat_mount) != 0) {
         log_error("%s", "Failed to mount FAT32");
@@ -569,7 +577,6 @@ int winafi_session_execute(winafi_session_t *session) {
         goto error;
     }
 
-    // Step 8: Mount NTFS
     log_info("Step 9: Mounting NTFS partition %s", ntfs_device);
     if (mount_ntfs(ntfs_device, session->mount_ctx.ntfs_mount) != 0) {
         log_error("%s", "Failed to mount NTFS");
@@ -577,22 +584,32 @@ int winafi_session_execute(winafi_session_t *session) {
         goto error;
     }
 
-    progress_fire(&session->progress_ctx, 65, "Extracting ISO");
+    progress_fire(&session->progress_ctx, 100, "Mounting partitions");
 
-    // Step 9: Extract ISO (20-95%)
+    // ── Step 4: Extract ISO (0‑100%) ──
+    progress_fire(&session->progress_ctx, 0, "Extracting ISO");
     log_info("%s", "Step 10: Extracting ISO to NTFS partition");
-    // Note: iso_extract_to_mountpoint will report progress from 20-95% via callback
+
+    struct { progress_context_t *prog; volatile int *cancel; } ep_bridge;
+    ep_bridge.prog = &session->progress_ctx;
+    ep_bridge.cancel = &session->cancelled;
+
     int ret = iso_extract_to_mountpoint(session->iso_path, session->mount_ctx.ntfs_mount,
-                                        NULL, NULL);
+                                        extract_progress_bridge, &ep_bridge);
     if (ret != ISO_OK) {
         log_error("Failed to extract ISO: %d", ret);
-        session_set_error(session, "E-30-A", "Cannot copy ISO files to USB");
+        if (session->cancelled) {
+            session_set_error(session, "E-30-C", "Operation cancelled by user");
+        } else {
+            session_set_error(session, "E-30-A", "Cannot copy ISO files to USB");
+        }
         goto error;
     }
 
-    progress_fire(&session->progress_ctx, 90, "Installing bootloaders");
+    progress_fire(&session->progress_ctx, 100, "Extracting ISO");
 
-    // Step 10-11: OS-specific boot setup (95-98%)
+    // ── Step 5: Boot setup + Sync + Cleanup (0‑100%) ──
+    progress_fire(&session->progress_ctx, 0, "Installing bootloaders");
     log_info("Step 11-12: OS-specific boot setup (detected OS: %s)", session->iso_info.detected_os_str);
 
     if (session->iso_info.os_type == ISO_OS_WINDOWS) {
@@ -702,17 +719,14 @@ int winafi_session_execute(winafi_session_t *session) {
         }
     }
 
-    progress_fire(&session->progress_ctx, 98, "Syncing filesystem");
+    progress_fire(&session->progress_ctx, 100, "Installing bootloaders");
 
-    // Step 12: Sync filesystem (99%)
+    // ── Sync + Cleanup ──
+    progress_fire(&session->progress_ctx, 0, "Syncing filesystem");
     log_info("%s", "Step 13: Syncing filesystem");
-    if (mount_sync() != 0) {
-        log_error("%s", "Failed to sync filesystem");
-        session_set_error(session, "E-22-C", "Cannot flush buffers to disk");
-        goto error;
-    }
+    mount_sync_path_timeout(session->mount_ctx.fat_mount, 30);
+    mount_sync_path_timeout(session->mount_ctx.ntfs_mount, 30);
 
-    // Step 13: Unmount partitions (100%)
     log_info("%s", "Step 14: Unmounting partitions");
     if (unmount_and_cleanup(&session->mount_ctx) != 0) {
         log_error("%s", "Failed to unmount partitions");
@@ -765,6 +779,10 @@ const char *winafi_get_error_message(winafi_session_t *session) {
     }
 
     return NULL;
+}
+
+void winafi_session_cancel(winafi_session_t *session) {
+    if (session) session->cancelled = 1;
 }
 
 /**

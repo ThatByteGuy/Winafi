@@ -11,8 +11,11 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/statvfs.h>
 #include <limits.h>
 #include <errno.h>
+#include <sys/wait.h>
+#include <dirent.h>
 
 /**
  * Structure to track extracted files for cleanup on error/cancellation
@@ -748,6 +751,45 @@ linux_sb_status_t iso_detect_linux_sb_status(const char *iso_path) {
     return LINUX_SB_UNKNOWN;
 }
 
+static int run_cmd(const char *argv0, const char *argv1,
+                   const char *argv2, const char *argv3,
+                   const char *argv4);
+static uint64_t count_dir_size(const char *path);
+
+static int udf_list_files_walk(const char *dirpath, const char *relpath,
+                                char ***files, int *count, int *cap) {
+    DIR *d = opendir(dirpath);
+    if (!d) return -1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char full[PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", dirpath, e->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        char child_rel[PATH_MAX];
+        if (relpath[0])
+            snprintf(child_rel, sizeof(child_rel), "%s/%s", relpath, e->d_name);
+        else
+            snprintf(child_rel, sizeof(child_rel), "%s", e->d_name);
+        if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+            if (*count >= *cap) {
+                *cap = *cap ? *cap * 2 : 4096;
+                char **tmp = realloc(*files, (size_t)(*cap) * sizeof(char *));
+                if (!tmp) { closedir(d); return -1; }
+                *files = tmp;
+            }
+            (*files)[*count] = strdup(child_rel);
+            if ((*files)[*count]) (*count)++;
+        } else if (S_ISDIR(st.st_mode)) {
+            if (udf_list_files_walk(full, child_rel, files, count, cap) != 0)
+                { closedir(d); return -1; }
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
 /**
  * List all files in ISO
  */
@@ -765,7 +807,35 @@ int iso_list_files(const char *iso_path, char ***out_files, int *out_count) {
         return ISO_ERR_FILE_NOT_FOUND;
     }
 
-    // Open ISO file
+    // UDF ISOs are not readable via libarchive - use kernel mount + directory walk
+    if (iso_is_udf(iso_path)) {
+        char tmpdir[] = "/tmp/winafi_iso_XXXXXX";
+        if (!mkdtemp(tmpdir))
+            return ISO_ERR_EXTRACT_FAILED;
+        if (run_cmd("mount", "-o", "loop,ro", iso_path, tmpdir) != 0) {
+            rmdir(tmpdir);
+            return ISO_ERR_EXTRACT_FAILED;
+        }
+        int count = 0, cap = 0;
+        char **files = NULL;
+        int ret = udf_list_files_walk(tmpdir, "", &files, &count, &cap);
+        run_cmd("umount", tmpdir, NULL, NULL, NULL);
+        rmdir(tmpdir);
+        if (ret != 0) {
+            for (int i = 0; i < count; i++) free(files[i]);
+            free(files);
+            return ISO_ERR_EXTRACT_FAILED;
+        }
+        if (count == 0) {
+            free(files);
+            return ISO_ERR_NO_BOOT_INFO;
+        }
+        *out_files = files;
+        *out_count = count;
+        return ISO_OK;
+    }
+
+    // Open ISO file (standard ISO 9660)
     struct archive *a = iso_open_archive(iso_path);
     if (!a) {
         return ISO_ERR_NOT_ISO;
@@ -774,14 +844,15 @@ int iso_list_files(const char *iso_path, char ***out_files, int *out_count) {
     // First pass: count files
     int file_count = 0;
     struct archive_entry *entry;
+    int arc_ret;
 
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+    while ((arc_ret = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
         file_count++;
         archive_read_data_skip(a);
     }
 
-    // Check for archive read errors
-    if (archive_errno(a) != ARCHIVE_EOF) {
+    // Check for archive read errors (not EOF)
+    if (arc_ret != ARCHIVE_EOF) {
         archive_read_free(a);
         return ISO_ERR_ARCHIVE_ERROR;
     }
@@ -809,7 +880,7 @@ int iso_list_files(const char *iso_path, char ***out_files, int *out_count) {
     // Second pass: collect file paths
     int idx = 0;
 
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+    while ((arc_ret = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
         const char *pathname = archive_entry_pathname(entry);
         if (pathname) {
             size_t len = strlen(pathname) + 1;
@@ -831,7 +902,7 @@ int iso_list_files(const char *iso_path, char ***out_files, int *out_count) {
     }
 
     // Check for errors during second pass
-    if (archive_errno(a) != ARCHIVE_EOF) {
+    if (arc_ret != ARCHIVE_EOF) {
         // Cleanup on error
         for (int i = 0; i < idx; i++) {
             free(files[i]);
@@ -953,6 +1024,157 @@ static int ensure_directory(const char *path, mode_t mode) {
     return 0;
 }
 
+static int run_cmd(const char *argv0, const char *argv1,
+                   const char *argv2, const char *argv3,
+                   const char *argv4) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        const char *args[6];
+        int n = 0;
+        args[n++] = argv0;
+        if (argv1) args[n++] = argv1;
+        if (argv2) args[n++] = argv2;
+        if (argv3) args[n++] = argv3;
+        if (argv4) args[n++] = argv4;
+        args[n] = NULL;
+        execvp(argv0, (char *const *)args);
+        _exit(127);
+    }
+    if (pid < 0) return -1;
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static uint64_t count_dir_size(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    uint64_t total = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char sub[PATH_MAX];
+        snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (stat(sub, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                total += count_dir_size(sub);
+            } else if (S_ISREG(st.st_mode)) {
+                total += (uint64_t)st.st_size;
+            }
+        }
+    }
+    closedir(d);
+    return total;
+}
+
+static int iso_extract_udf(const char *iso_path, const char *mount_point,
+                          iso_progress_callback_t progress_cb, void *user_data) {
+    char tmpdir[] = "/tmp/winafi_iso_XXXXXX";
+    if (!mkdtemp(tmpdir)) {
+        fprintf(stderr, "Failed to create temp mount dir\n");
+        return ISO_ERR_EXTRACT_FAILED;
+    }
+
+    fprintf(stderr, "UDF ISO detected, using kernel mount for extraction\n");
+
+    // Mount ISO as loop
+    if (run_cmd("mount", "-o", "loop,ro", iso_path, tmpdir) != 0) {
+        fprintf(stderr, "Failed to mount UDF ISO\n");
+        rmdir(tmpdir);
+        return ISO_ERR_EXTRACT_FAILED;
+    }
+
+    // Pre-count total bytes for progress tracking
+    uint64_t total_bytes = count_dir_size(tmpdir);
+    if (total_bytes == 0) {
+        fprintf(stderr, "Mounted UDF ISO appears empty\n");
+        run_cmd("umount", tmpdir, NULL, NULL, NULL);
+        rmdir(tmpdir);
+        return ISO_ERR_EXTRACT_FAILED;
+    }
+    fprintf(stderr, "UDF ISO total content size: %lu bytes\n", (unsigned long)total_bytes);
+
+    // Record initial free space on target via statvfs for lightweight progress tracking
+    struct statvfs vfs_buf;
+    uint64_t initial_free = 0;
+    unsigned long blk_sz = 0;
+    if (statvfs(mount_point, &vfs_buf) == 0) {
+        blk_sz = (unsigned long)vfs_buf.f_frsize;
+        initial_free = (uint64_t)vfs_buf.f_bfree * blk_sz;
+    }
+
+    // Build source path with trailing slash to copy contents
+    char src_buf[PATH_MAX];
+    snprintf(src_buf, sizeof(src_buf), "%s/.", tmpdir);
+
+    // Fork cp to do the actual copy in the background
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("cp", "cp", "-r", src_buf, mount_point, NULL);
+        _exit(127);
+    }
+    if (pid < 0) {
+        fprintf(stderr, "Failed to fork cp\n");
+        run_cmd("umount", tmpdir, NULL, NULL, NULL);
+        rmdir(tmpdir);
+        return ISO_ERR_EXTRACT_FAILED;
+    }
+
+    // Monitor copy progress while cp runs (poll interval 5s)
+    // Use statvfs free-space delta to avoid expensive recursive directory walks
+    int ret = ISO_OK;
+    int status;
+    uint64_t prev_copied = 0;
+    while (waitpid(pid, &status, WNOHANG) == 0) {
+        uint64_t copied = prev_copied;
+        if (blk_sz > 0 && statvfs(mount_point, &vfs_buf) == 0) {
+            uint64_t cur_free = (uint64_t)vfs_buf.f_bfree * blk_sz;
+            if (cur_free < initial_free) {
+                uint64_t new_copied = initial_free - cur_free;
+                if (new_copied > prev_copied)
+                    copied = new_copied;
+            }
+        }
+        prev_copied = copied;
+        int percent = (int)(copied * 100 / total_bytes);
+        if (percent > 100) percent = 100;
+
+        if (progress_cb) {
+            iso_progress_info_t prog;
+            memset(&prog, 0, sizeof(prog));
+            prog.file_path = NULL;
+            prog.bytes_extracted = copied;
+            prog.total_size = total_bytes;
+            prog.percent = percent;
+            prog.message = "Extracting ISO files";
+            if (progress_cb(&prog, user_data) != 0) {
+                kill(pid, SIGTERM);
+                waitpid(pid, NULL, 0);
+                fprintf(stderr, "Extraction cancelled by user\n");
+                ret = ISO_ERR_EXTRACT_FAILED;
+                break;
+            }
+        }
+        sleep(5);
+    }
+
+    if (ret == ISO_OK) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            fprintf(stderr, "cp exited with code %d\n", WEXITSTATUS(status));
+            ret = ISO_ERR_EXTRACT_FAILED;
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "cp terminated by signal %d\n", WTERMSIG(status));
+            ret = ISO_ERR_EXTRACT_FAILED;
+        }
+    }
+
+    // Unmount and clean up
+    run_cmd("umount", tmpdir, NULL, NULL, NULL);
+    rmdir(tmpdir);
+    return ret;
+}
+
 /**
  * Extract ISO file to mounted device partition
  */
@@ -982,7 +1204,13 @@ int iso_extract_to_mountpoint(const char *iso_path, const char *mount_point,
         return ISO_ERR_EXTRACT_FAILED;
     }
 
-    // Open ISO file
+    // UDF ISOs (modern Windows 10/11) are not properly handled by libarchive.
+    // Use kernel mount + cp instead.
+    if (iso_is_udf(iso_path)) {
+        return iso_extract_udf(iso_path, mount_point, progress_cb, user_data);
+    }
+
+    // Open ISO file (standard ISO 9660)
     struct archive *a = iso_open_archive(iso_path);
     if (!a) {
         return ISO_ERR_NOT_ISO;
@@ -1003,9 +1231,10 @@ int iso_extract_to_mountpoint(const char *iso_path, const char *mount_point,
 
     int error_code = ISO_OK;
     struct archive_entry *entry;
+    int archive_ret;
 
     // Extract files
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+    while ((archive_ret = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
         const char *pathname = archive_entry_pathname(entry);
         if (!pathname || pathname[0] == '\0') {
             archive_read_data_skip(a);
@@ -1180,8 +1409,8 @@ int iso_extract_to_mountpoint(const char *iso_path, const char *mount_point,
         }
     }
 
-    // Check for archive errors
-    if (error_code == ISO_OK && archive_errno(a) != ARCHIVE_EOF) {
+    // Check for archive errors (archive_ret tracks the last archive_read_next_header result)
+    if (error_code == ISO_OK && archive_ret != ARCHIVE_EOF) {
         fprintf(stderr, "Archive error: %s\n", archive_error_string(a));
         error_code = ISO_ERR_ARCHIVE_ERROR;
     }

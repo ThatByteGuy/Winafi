@@ -22,7 +22,9 @@ typedef struct {
     char vendor[256];
     char model[256];
     char serial[256];
-    int is_removable;  // 1 if USB/removable, 0 if fixed
+    int is_removable;           // 1 if USB/removable, 0 if fixed/internal
+    int is_mounted;             // 1 if any partition is currently mounted
+    char mount_point[256];      // first mount point if mounted, empty otherwise
 } winafi_device_t;
 
 // Session lifecycle
@@ -108,6 +110,9 @@ uint32_t winafi_session_get_elapsed_seconds(winafi_session_t *session);
 // Error handling
 const char *winafi_get_error_code(winafi_session_t *session);
 const char *winafi_get_error_message(winafi_session_t *session);
+
+// Cancel running operation
+void winafi_session_cancel(winafi_session_t *session);
 
 // Progress callback
 typedef void (*winafi_progress_callback_t)(int percent, const char *message, void *user_data);

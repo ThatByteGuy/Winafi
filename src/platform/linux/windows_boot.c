@@ -173,9 +173,14 @@ static int setup_uefi_boot(const char *mount_point,
         return ISO_ERR_FILE_NOT_FOUND;
     }
 
+    // Build full source path relative to mount point
+    char src_bootx64[PATH_MAX];
+    if (snprintf(src_bootx64, sizeof(src_bootx64), "%s/%s", mount_point, boot_info->bootx64_path) >= (int)sizeof(src_bootx64)) {
+        return ISO_ERR_EXTRACT_FAILED;
+    }
     struct stat st;
-    if (stat(boot_info->bootx64_path, &st) != 0) {
-        fprintf(stderr, "ERROR: BOOTX64.EFI not found at %s\n", boot_info->bootx64_path);
+    if (stat(src_bootx64, &st) != 0) {
+        fprintf(stderr, "ERROR: BOOTX64.EFI not found at %s\n", src_bootx64);
         return ISO_ERR_FILE_NOT_FOUND;
     }
 
@@ -196,13 +201,13 @@ static int setup_uefi_boot(const char *mount_point,
         strlen(efi_boot_dir) + strlen("/BOOTX64.EFI") >= sizeof(dest_bootx64)) {
         return ISO_ERR_EXTRACT_FAILED;
     }
-    if (copy_file(boot_info->bootx64_path, dest_bootx64) != 0) {
+    if (copy_file(src_bootx64, dest_bootx64) != 0) {
         fprintf(stderr, "ERROR: Failed to copy BOOTX64.EFI (disk full, permission denied, or I/O error)\n");
         return ISO_ERR_EXTRACT_FAILED;
     }
 
     /* Verify BOOTX64.EFI is signed — unsigned bootloaders will be rejected by Secure Boot */
-    int signed_result = pki_is_signed(boot_info->bootx64_path);
+    int signed_result = pki_is_signed(src_bootx64);
     if (signed_result == 0) {
         const char *sb_warn = "WARNING: Windows BOOTX64.EFI is not Authenticode-signed. "
                               "This USB may fail to boot on systems with Secure Boot enabled.";
@@ -218,12 +223,15 @@ static int setup_uefi_boot(const char *mount_point,
 
     // Copy BOOTIA32.EFI if present
     if (boot_info->bootia32_path) {
+        char src_bootia32[PATH_MAX];
+        if (snprintf(src_bootia32, sizeof(src_bootia32), "%s/%s", mount_point, boot_info->bootia32_path) >= (int)sizeof(src_bootia32))
+            return ISO_ERR_EXTRACT_FAILED;
         char dest_bootia32[PATH_MAX];
         if (snprintf(dest_bootia32, sizeof(dest_bootia32), "%s/BOOTIA32.EFI", efi_boot_dir) < 0 ||
             strlen(efi_boot_dir) + strlen("/BOOTIA32.EFI") >= sizeof(dest_bootia32)) {
             return ISO_ERR_EXTRACT_FAILED;
         }
-        if (copy_file(boot_info->bootia32_path, dest_bootia32) != 0) {
+        if (copy_file(src_bootia32, dest_bootia32) != 0) {
             fprintf(stderr, "Warning: Failed to copy BOOTIA32.EFI (optional)\n");
         } else if (progress_cb) {
             progress_cb(15, "Copied BOOTIA32.EFI", NULL);
@@ -232,12 +240,15 @@ static int setup_uefi_boot(const char *mount_point,
 
     // Copy BOOTAA64.EFI if present
     if (boot_info->bootaa64_path) {
+        char src_bootaa64[PATH_MAX];
+        if (snprintf(src_bootaa64, sizeof(src_bootaa64), "%s/%s", mount_point, boot_info->bootaa64_path) >= (int)sizeof(src_bootaa64))
+            return ISO_ERR_EXTRACT_FAILED;
         char dest_bootaa64[PATH_MAX];
         if (snprintf(dest_bootaa64, sizeof(dest_bootaa64), "%s/BOOTAA64.EFI", efi_boot_dir) < 0 ||
             strlen(efi_boot_dir) + strlen("/BOOTAA64.EFI") >= sizeof(dest_bootaa64)) {
             return ISO_ERR_EXTRACT_FAILED;
         }
-        if (copy_file(boot_info->bootaa64_path, dest_bootaa64) != 0) {
+        if (copy_file(src_bootaa64, dest_bootaa64) != 0) {
             fprintf(stderr, "Warning: Failed to copy BOOTAA64.EFI (optional)\n");
         } else if (progress_cb) {
             progress_cb(20, "Copied BOOTAA64.EFI", NULL);
@@ -265,6 +276,14 @@ static int setup_bios_boot(const char *mount_point,
         return ISO_ERR_FILE_NOT_FOUND;
     }
 
+    // Build full source paths relative to mount point
+    char src_bootmgr[PATH_MAX];
+    if (snprintf(src_bootmgr, sizeof(src_bootmgr), "%s/%s", mount_point, boot_info->bootmgr_path) >= (int)sizeof(src_bootmgr))
+        return ISO_ERR_EXTRACT_FAILED;
+    char src_bcd[PATH_MAX];
+    if (snprintf(src_bcd, sizeof(src_bcd), "%s/%s", mount_point, boot_info->bcd_path) >= (int)sizeof(src_bcd))
+        return ISO_ERR_EXTRACT_FAILED;
+
     // Copy bootmgr to root of partition
     char dest_bootmgr[PATH_MAX];
     if (snprintf(dest_bootmgr, sizeof(dest_bootmgr), "%s/bootmgr", mount_point) < 0 ||
@@ -272,12 +291,12 @@ static int setup_bios_boot(const char *mount_point,
         return ISO_ERR_EXTRACT_FAILED;
     }
     struct stat _bm_st;
-    if (stat(boot_info->bootmgr_path, &_bm_st) != 0) {
+    if (stat(src_bootmgr, &_bm_st) != 0) {
         fprintf(stderr, "ERROR: Source file not found: %s (errno: %d)\n",
-                boot_info->bootmgr_path, errno);
+                src_bootmgr, errno);
         return ISO_ERR_FILE_NOT_FOUND;
     }
-    if (copy_file(boot_info->bootmgr_path, dest_bootmgr) != 0) {
+    if (copy_file(src_bootmgr, dest_bootmgr) != 0) {
         fprintf(stderr, "ERROR: Failed to copy bootmgr (disk full, permission denied, or I/O error)\n");
         return ISO_ERR_EXTRACT_FAILED;
     }
@@ -303,12 +322,12 @@ static int setup_bios_boot(const char *mount_point,
         return ISO_ERR_EXTRACT_FAILED;
     }
     struct stat _bcd_st;
-    if (stat(boot_info->bcd_path, &_bcd_st) != 0) {
+    if (stat(src_bcd, &_bcd_st) != 0) {
         fprintf(stderr, "ERROR: Source file not found: %s (errno: %d)\n",
-                boot_info->bcd_path, errno);
+                src_bcd, errno);
         return ISO_ERR_FILE_NOT_FOUND;
     }
-    if (copy_file(boot_info->bcd_path, dest_bcd) != 0) {
+    if (copy_file(src_bcd, dest_bcd) != 0) {
         fprintf(stderr, "ERROR: Failed to copy BCD file (disk full, permission denied, or I/O error)\n");
         return ISO_ERR_EXTRACT_FAILED;
     }

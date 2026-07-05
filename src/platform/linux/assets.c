@@ -28,6 +28,7 @@ int assets_find(const char *rel, char *out, unsigned long out_size) {
         char *d = dirname(dir);
         if (try_path(out, out_size, "%s/../share/winafi/assets/%s", d, rel)) return 0;
         if (try_path(out, out_size, "%s/../src/assets/%s", d, rel)) return 0;
+        if (try_path(out, out_size, "%s/../../src/assets/%s", d, rel)) return 0;
     }
     if (try_path(out, out_size, "src/assets/%s", rel)) return 0;
     return -1;

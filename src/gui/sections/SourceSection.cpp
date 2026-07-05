@@ -5,6 +5,36 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QFileDialog>
+#include <QUrl>
+
+static QList<QUrl> mounted_drive_urls() {
+    QList<QUrl> urls;
+    static const char *skip_fstypes[] = {
+        "proc", "sysfs", "tmpfs", "devtmpfs", "devpts",
+        "cgroup", "cgroup2", "cpuset", "pstore",
+        "securityfs", "selinuxfs", "autofs", "overlay",
+        "aufs", "squashfs", "hugetlbfs", "mqueue", "bpf",
+        "debugfs", "tracefs", "ramfs", "configfs",
+        "efivarfs", "fusectl", "rpc_pipefs", "nsfs",
+        "sys", "none", nullptr
+    };
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) return urls;
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        char dev[256], mnt[256], fstype[64];
+        if (sscanf(line, "%255s %255s %63s", dev, mnt, fstype) != 3)
+            continue;
+        bool skip = false;
+        for (int i = 0; skip_fstypes[i]; i++) {
+            if (strcmp(fstype, skip_fstypes[i]) == 0) { skip = true; break; }
+        }
+        if (skip || strcmp(dev, "none") == 0) continue;
+        urls.append(QUrl::fromLocalFile(QString::fromUtf8(mnt)));
+    }
+    fclose(fp);
+    return urls;
+}
 
 SourceSection::SourceSection(QWidget *parent) : QWidget(parent) {
     auto *root = new QVBoxLayout(this);
@@ -26,8 +56,21 @@ SourceSection::SourceSection(QWidget *parent) : QWidget(parent) {
     root->addStretch(1);
 
     connect(m_browse, &QPushButton::clicked, this, [this]{
-        QString f = QFileDialog::getOpenFileName(this, tr("Select ISO"), QString(), tr("ISO images (*.iso)"));
-        if (!f.isEmpty()) { m_isoEdit->setText(f); emit isoChosen(f); }
+        QFileDialog dialog(this, tr("Select ISO"), QString(), tr("ISO images (*.iso)"));
+        dialog.setFileMode(QFileDialog::ExistingFile);
+        dialog.setOption(QFileDialog::DontUseNativeDialog);
+
+        QList<QUrl> sidebar = mounted_drive_urls();
+        if (!sidebar.isEmpty())
+            dialog.setSidebarUrls(sidebar);
+
+        if (dialog.exec() == QDialog::Accepted) {
+            QStringList files = dialog.selectedFiles();
+            if (!files.isEmpty()) {
+                m_isoEdit->setText(files.first());
+                emit isoChosen(files.first());
+            }
+        }
     });
     connect(m_verify, &QPushButton::clicked, this, &SourceSection::verifyRequested);
     connect(m_hash,   &QPushButton::clicked, this, &SourceSection::hashRequested);

@@ -1,4 +1,5 @@
 #include "partition.h"
+#include "device_validate.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -244,6 +245,11 @@ int partition_wipe_and_create(const char *device,
                              uint64_t total_sectors,
                              uint64_t boot_size_bytes) {
     if (device == NULL) {
+        return -1;
+    }
+
+    // Final safety guard before any destructive write
+    if (final_wipe_guard(device) != VALIDATE_OK) {
         return -1;
     }
 
